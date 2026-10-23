@@ -1,0 +1,20 @@
+# Webmail an ein bestehendes Docker-Netzwerk anbinden (z. B. das des OpenLDAP- und Mailservers).
+# Datei nach docker-compose.override.yml kopieren und den Netzwerknamen anpassen:
+#   docker network ls          # Namen des Netzwerks herausfinden
+#   cp docker-compose.override.yml.example docker-compose.override.yml
+#   docker compose up -d
+#
+# In .env dann den Containernamen als Host verwenden, z. B.:
+#   LDAP_URL=ldap://openldap:389
+#   LDAP_STARTTLS=false
+#   AUTH_IMAP_HOST=mailserver   AUTH_IMAP_PORT=143   AUTH_IMAP_SECURITY=none
+
+services:
+  app:
+    networks:
+      - backend
+
+networks:
+  backend:
+    external: true
+    name: mein-mail-netzwerk     # <- Name aus "docker network ls"

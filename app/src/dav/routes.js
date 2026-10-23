@@ -1,0 +1,252 @@
+'use strict';
+
+const crypto = require('crypto');
+const express = require('express');
+const db = require('../db');
+const { encrypt } = require('../crypto');
+const svc = require('./service');
+const ics = require('./ics');
+const vcard = require('./vcard');
+const { DavClient } = require('./client');
+
+const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
+
+function collUrl(source, url) {
+  const u = source.client.assertOwnUrl(url);
+  return u.endsWith('/') ? u : u + '/';
+}
+
+function router() {
+  const r = express.Router();
+
+  // ------------------------------------------------------------ Quellen
+  r.get('/dav/sources', wrap(async (req, res) => {
+    const rows = await db.many('SELECT id, name, url, username, allow_insecure_tls FROM dav_sources WHERE user_id = $1 ORDER BY id', [req.user.id]);
+    res.json({ sources: rows });
+  }));
+
+  r.post('/dav/sources', wrap(async (req, res) => {
+    const { name, url, username, password } = req.body;
+    if (!/^https?:\/\//i.test(String(url || ''))) return res.status(400).json({ error: 'Bitte eine gültige http(s)-URL angeben' });
+    // Erst testen
+    const test = new DavClient({ baseUrl: url, username, password });
+    let found;
+    try {
+      found = await test.discover();
+    } catch (err) {
+      return res.status(400).json({ error: `Verbindung fehlgeschlagen: ${err.message}` });
+    }
+    if (!found.length) return res.status(400).json({ error: 'Keine Kalender oder Adressbücher unter dieser URL gefunden' });
+    const row = await db.one(
+      'INSERT INTO dav_sources (user_id, name, url, username, password) VALUES ($1,$2,$3,$4,$5) RETURNING id',
+      [req.user.id, String(name || new URL(url).hostname), url, String(username || ''), encrypt(password)]);
+    svc.invalidate(req.user);
+    res.json({ id: row.id, found: found.length });
+  }));
+
+  r.delete('/dav/sources/:id', wrap(async (req, res) => {
+    await db.query('DELETE FROM dav_sources WHERE id = $1 AND user_id = $2', [parseInt(req.params.id, 10), req.user.id]);
+    svc.invalidate(req.user);
+    res.json({ ok: true });
+  }));
+
+  // ------------------------------------------------------------ Collections
+  r.get('/dav/collections', wrap(async (req, res) => {
+    const out = await svc.allCollections(req.user, { fresh: req.query.fresh === '1' });
+    res.json(out);
+  }));
+
+  r.post('/dav/collections', wrap(async (req, res) => {
+    const { sourceId, type, name, color } = req.body;
+    const source = await svc.getSource(req.user, sourceId);
+    let home = await source.client.homeSet(type === 'addressbook' ? 'addressbook' : 'calendar').catch(() => null);
+    if (!home) {
+      // Fallback: neben einer vorhandenen Sammlung gleichen Typs anlegen
+      const existing = (await svc.collections(req.user, source)).find((c) => c.type === type);
+      if (!existing) return res.status(400).json({ error: 'Auf diesem Server kann kein Speicherort ermittelt werden' });
+      home = existing.url.replace(/[^/]+\/?$/, '');
+    }
+    const url = `${home}${crypto.randomUUID()}/`;
+    if (type === 'addressbook') await source.client.mkaddressbook(url, String(name || 'Adressbuch'));
+    else await source.client.mkcalendar(url, String(name || 'Kalender'), color || '#3b6fd8');
+    svc.invalidate(req.user, source.id);
+    res.json({ url });
+  }));
+
+  r.patch('/dav/collections', wrap(async (req, res) => {
+    const { sourceId, url, name, color } = req.body;
+    const source = await svc.getSource(req.user, sourceId);
+    const target = collUrl(source, url);
+    let props = '';
+    if (name) props += `<d:displayname>${require('./client').xmlEscape(name)}</d:displayname>`;
+    if (color) props += `<ic:calendar-color>${require('./client').xmlEscape(color)}</ic:calendar-color>`;
+    if (props) await source.client.proppatch(target, props);
+    svc.invalidate(req.user, source.id);
+    res.json({ ok: true });
+  }));
+
+  r.delete('/dav/collections', wrap(async (req, res) => {
+    const source = await svc.getSource(req.user, req.query.sourceId);
+    await source.client.deleteCollection(collUrl(source, req.query.url));
+    svc.invalidate(req.user, source.id);
+    res.json({ ok: true });
+  }));
+
+  // ------------------------------------------------------------ Termine
+  r.get('/events', wrap(async (req, res) => {
+    const start = new Date(req.query.start);
+    const end = new Date(req.query.end);
+    if (isNaN(start) || isNaN(end) || end <= start) return res.status(400).json({ error: 'Ungültiger Zeitraum' });
+    if (end - start > 400 * 86400000) return res.status(400).json({ error: 'Zeitraum zu groß' });
+    const hidden = new Set(String(req.query.hidden || '').split(',').filter(Boolean));
+    const sources = await svc.getSources(req.user);
+    const events = [];
+    const errors = [];
+    await Promise.all(sources.map(async (s) => {
+      let cals;
+      try {
+        cals = (await svc.collections(req.user, s)).filter((c) => c.type === 'calendar' && !hidden.has(c.url));
+      } catch (err) {
+        errors.push({ sourceId: s.id, sourceName: s.name, message: err.message });
+        return;
+      }
+      await Promise.all(cals.map(async (cal) => {
+        try {
+          const objects = await s.client.calendarQuery(cal.url, start, end);
+          for (const o of objects) {
+            let occ = [];
+            try { occ = ics.expand(o.data, start, end); } catch (err) { continue; }
+            for (const e of occ) {
+              events.push({
+                ...e,
+                id: `${o.url}#${e.recurrenceId || ''}`,
+                url: o.url,
+                etag: o.etag,
+                calendar: cal.url,
+                color: cal.color,
+                sourceId: s.id,
+              });
+            }
+          }
+        } catch (err) {
+          errors.push({ sourceId: s.id, sourceName: `${s.name} / ${cal.name}`, message: err.message });
+        }
+      }));
+    }));
+    events.sort((a, b) => String(a.start).localeCompare(String(b.start)));
+    res.json({ events, errors });
+  }));
+
+  r.post('/events', wrap(async (req, res) => {
+    const { sourceId, calendar, ...fields } = req.body;
+    const source = await svc.getSource(req.user, sourceId);
+    const cal = collUrl(source, calendar);
+    const { uid, data } = ics.buildEvent(fields);
+    const url = `${cal}${encodeURIComponent(uid)}.ics`;
+    const etag = await source.client.putObject(url, data, 'text/calendar');
+    res.json({ url, etag });
+  }));
+
+  r.put('/events', wrap(async (req, res) => {
+    const { sourceId, url, etag, calendar, ...fields } = req.body;
+    const source = await svc.getSource(req.user, sourceId);
+    const target = source.client.assertOwnUrl(url);
+    const current = await source.client.getObject(target);
+    const { data } = ics.buildEvent(fields, current.data);
+    const useEtag = etag || current.etag;
+    // In anderen Kalender verschieben?
+    if (calendar && !target.startsWith(collUrl(source, calendar))) {
+      const newUrl = `${collUrl(source, calendar)}${target.split('/').pop()}`;
+      await source.client.putObject(newUrl, data, 'text/calendar');
+      await source.client.deleteObject(target, useEtag);
+      return res.json({ url: newUrl });
+    }
+    const newEtag = await source.client.putObject(target, data, 'text/calendar', useEtag);
+    res.json({ url: target, etag: newEtag });
+  }));
+
+  r.delete('/events', wrap(async (req, res) => {
+    const source = await svc.getSource(req.user, req.query.sourceId);
+    await source.client.deleteObject(source.client.assertOwnUrl(req.query.url), req.query.etag || undefined);
+    res.json({ ok: true });
+  }));
+
+  // ------------------------------------------------------------ Kontakte
+  r.get('/contacts', wrap(async (req, res) => {
+    const source = await svc.getSource(req.user, req.query.sourceId);
+    const book = collUrl(source, req.query.book);
+    const items = await source.client.addressbookQuery(book);
+    const contacts = items.map((it) => {
+      const { photo, ...c } = vcard.parse(it.data);
+      return { ...c, hasPhoto: !!photo, url: it.url, etag: it.etag };
+    });
+    contacts.sort((a, b) => (a.fn || '').localeCompare(b.fn || '', 'de', { sensitivity: 'base' }));
+    res.json({ contacts });
+  }));
+
+  r.post('/contacts', wrap(async (req, res) => {
+    const { sourceId, book, contact } = req.body;
+    const source = await svc.getSource(req.user, sourceId);
+    const b = collUrl(source, book);
+    const { uid, data } = vcard.build(contact || {});
+    const url = `${b}${encodeURIComponent(uid)}.vcf`;
+    const etag = await source.client.putObject(url, data, 'text/vcard');
+    svc.invalidate(req.user, '__contacts__');
+    res.json({ url, etag });
+  }));
+
+  r.put('/contacts', wrap(async (req, res) => {
+    const { sourceId, url, etag, contact } = req.body;
+    const source = await svc.getSource(req.user, sourceId);
+    const target = source.client.assertOwnUrl(url);
+    const current = await source.client.getObject(target);
+    const prev = vcard.parse(current.data);
+    const { data } = vcard.build({ ...contact, uid: prev.uid || contact.uid }, current.data);
+    const newEtag = await source.client.putObject(target, data, 'text/vcard', etag || current.etag);
+    svc.invalidate(req.user, '__contacts__');
+    res.json({ url: target, etag: newEtag });
+  }));
+
+  r.delete('/contacts', wrap(async (req, res) => {
+    const source = await svc.getSource(req.user, req.query.sourceId);
+    await source.client.deleteObject(source.client.assertOwnUrl(req.query.url), req.query.etag || undefined);
+    svc.invalidate(req.user, '__contacts__');
+    res.json({ ok: true });
+  }));
+
+  // ------------------------------------------------------------ Kontaktfotos
+  /** E-Mail-Adressen, zu denen ein Kontaktfoto existiert (für Avatare in der Mail-Ansicht). */
+  r.get('/contact-photos', wrap(async (req, res) => {
+    const contacts = await svc.allContacts(req.user);
+    const emails = new Set();
+    for (const c of contacts) if (c.photo) for (const e of c.emails) emails.add(e.value.toLowerCase());
+    res.setHeader('Cache-Control', 'private, no-cache');
+    res.json({ emails: [...emails] });
+  }));
+
+  /** Foto ausliefern: ?email=… (Mail-Ansicht) oder ?sourceId=…&url=… (Kontaktliste) */
+  r.get('/contact-photo', wrap(async (req, res) => {
+    let photo = null;
+    if (req.query.email) {
+      const email = String(req.query.email).toLowerCase();
+      const contacts = await svc.allContacts(req.user);
+      const hit = contacts.find((c) => c.photo && c.emails.some((e) => e.value.toLowerCase() === email));
+      photo = hit && hit.photo;
+    } else if (req.query.url) {
+      const source = await svc.getSource(req.user, req.query.sourceId);
+      const obj = await source.client.getObject(source.client.assertOwnUrl(req.query.url));
+      photo = vcard.parse(obj.data).photo;
+    }
+    const m = photo && String(photo).match(/^data:(image\/(?:jpeg|png|gif|webp));base64,(.+)$/i);
+    if (!m) return res.status(404).end();
+    res.setHeader('Content-Type', m[1].toLowerCase());
+    res.setHeader('Cache-Control', 'private, max-age=600');
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+    res.end(Buffer.from(m[2], 'base64'));
+  }));
+
+  return r;
+}
+
+module.exports = { router };

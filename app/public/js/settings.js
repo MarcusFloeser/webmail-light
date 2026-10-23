@@ -1,0 +1,417 @@
+import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, formValues, fullDate } from './ui.js';
+import { get, post, patch, del } from './api.js';
+import { state, loadAccounts } from './state.js';
+import * as reminders from './reminders.js';
+
+const PRESETS = [
+  { domains: ['gmail.com', 'googlemail.com'], name: 'Gmail', imapHost: 'imap.gmail.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecurity: 'ssl', saveSent: false, hint: 'Gmail: App-Passwort verwenden (Google-Konto → Sicherheit → App-Passwörter). Gmail legt gesendete Mails selbst ab.' },
+  { domains: ['outlook.com', 'hotmail.com', 'live.com', 'msn.com', 'outlook.de', 'hotmail.de'], name: 'Outlook.com', imapHost: 'outlook.office365.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp-mail.outlook.com', smtpPort: 587, smtpSecurity: 'starttls', saveSent: false, hint: 'Microsoft erlaubt bei vielen Konten nur noch OAuth – Passwort-Anmeldung funktioniert ggf. nicht.' },
+  { domains: ['icloud.com', 'me.com', 'mac.com'], name: 'iCloud', imapHost: 'imap.mail.me.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.mail.me.com', smtpPort: 587, smtpSecurity: 'starttls', saveSent: true, hint: 'iCloud: app-spezifisches Passwort unter appleid.apple.com erzeugen.' },
+  { domains: ['gmx.ch', 'gmx.de', 'gmx.net', 'gmx.at'], name: 'GMX', imapHost: 'imap.gmx.net', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'mail.gmx.net', smtpPort: 587, smtpSecurity: 'starttls', saveSent: true, hint: 'GMX: IMAP-Zugriff in den GMX-Einstellungen aktivieren.' },
+  { domains: ['web.de'], name: 'WEB.DE', imapHost: 'imap.web.de', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.web.de', smtpPort: 587, smtpSecurity: 'starttls', saveSent: true, hint: 'WEB.DE: IMAP-Zugriff in den Einstellungen aktivieren.' },
+  { domains: ['posteo.de', 'posteo.net', 'posteo.ch'], name: 'Posteo', imapHost: 'posteo.de', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'posteo.de', smtpPort: 465, smtpSecurity: 'ssl', saveSent: true },
+  { domains: ['mailbox.org'], name: 'mailbox.org', imapHost: 'imap.mailbox.org', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.mailbox.org', smtpPort: 465, smtpSecurity: 'ssl', saveSent: true },
+  { domains: ['fastmail.com', 'fastmail.fm'], name: 'Fastmail', imapHost: 'imap.fastmail.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.fastmail.com', smtpPort: 465, smtpSecurity: 'ssl', saveSent: true, hint: 'Fastmail: App-Passwort verwenden.' },
+  { domains: ['yahoo.com', 'yahoo.de', 'ymail.com'], name: 'Yahoo', imapHost: 'imap.mail.yahoo.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.mail.yahoo.com', smtpPort: 465, smtpSecurity: 'ssl', saveSent: true, hint: 'Yahoo: App-Passwort verwenden.' },
+  { domains: ['bluewin.ch'], name: 'Bluewin', imapHost: 'imaps.bluewin.ch', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtpauths.bluewin.ch', smtpPort: 465, smtpSecurity: 'ssl', saveSent: true },
+];
+
+let root = null;
+
+export function unmount() { root = null; }
+
+export async function render(main, route) {
+  const section = route.parts[1] || 'accounts';
+  const tabs = [['accounts', 'E-Mail-Konten'], ['dav', 'Kalender & Kontakte'], ['profile', 'Profil']];
+  const content = h('div', { class: 'settings-content' });
+  root = h('div', { class: 'settings-view' },
+    h('nav', { class: 'settings-tabs' }, tabs.map(([k, l]) => h('a', { href: `#/settings/${k}`, class: section === k ? 'active' : '' }, l))),
+    content);
+  clear(main, root);
+  if (section === 'accounts') {
+    const sub = route.parts[2];
+    if (sub === 'new') accountForm(content, null);
+    else if (sub) {
+      const acc = state.accounts.find((a) => a.id === Number(sub));
+      if (acc) accountDetail(content, acc); else accountList(content);
+    } else accountList(content);
+  } else if (section === 'dav') {
+    await davSection(content);
+  } else {
+    profileSection(content);
+  }
+}
+
+// ====================================================================== Konten
+
+function statusBadge(a) {
+  const map = { ok: ['ok', 'verbunden'], error: ['error', 'Fehler'], syncing: ['busy', 'synchronisiert…'], pending: ['busy', 'verbinde…'] };
+  const [cls, label] = map[a.status] || ['busy', a.status];
+  return h('span', { class: `status-pill ${cls}`, title: a.lastError || '' }, label);
+}
+
+function accountList(c) {
+  clear(c,
+    h('div', { class: 'section-head' }, h('h2', {}, 'E-Mail-Konten'),
+      h('a', { class: 'btn btn-primary', href: '#/settings/accounts/new' }, icon('plus', 16), 'Konto hinzufügen')),
+    state.accounts.length
+      ? h('div', { class: 'card-list' }, state.accounts.map((a) => h('a', { class: 'acc-card', href: `#/settings/accounts/${a.id}` },
+        h('span', { class: 'acc-dot big', style: { background: a.color } }),
+        h('div', { class: 'grow' },
+          h('strong', {}, a.name), h('div', { class: 'muted' }, a.email),
+          h('div', { class: 'muted small' }, `${a.identities.length} Identität(en) · ${a.folders.length} Ordner${a.lastSync ? ' · zuletzt ' + fullDate(a.lastSync) : ''}`),
+          a.status === 'error' && a.lastError ? h('div', { class: 'error-text small' }, a.lastError) : null),
+        a.enabled ? statusBadge(a) : h('span', { class: 'status-pill' }, 'deaktiviert'))))
+      : h('p', { class: 'muted' }, 'Noch keine Konten. Du kannst beliebig viele IMAP-Konten hinzufügen.'));
+}
+
+function accountDetail(c, a) {
+  clear(c,
+    h('div', { class: 'section-head' },
+      h('a', { href: '#/settings/accounts', class: 'icon-btn', title: 'Zurück' }, icon('back')),
+      h('h2', {}, a.name), statusBadge(a)),
+    a.lastError ? h('div', { class: 'banner banner-error' }, a.lastError) : null,
+    h('h3', {}, 'Identitäten'),
+    h('p', { class: 'muted small' }, 'Absender, die du mit diesem Konto verwenden kannst (z. B. Aliasse). Antworten wählen automatisch die passende Identität.'),
+    h('div', { class: 'card-list' }, a.identities.map((i) => h('div', { class: 'ident-card' },
+      h('div', { class: 'grow' },
+        h('strong', {}, i.name || '(ohne Namen)'), ' ', h('span', { class: 'muted' }, `<${i.email}>`),
+        i.isDefault ? h('span', { class: 'chip' }, 'Standard') : null,
+        i.replyTo ? h('div', { class: 'muted small' }, `Antwort an: ${i.replyTo}`) : null,
+        i.signature ? h('div', { class: 'muted small' }, 'mit Signatur') : null),
+      iconButton('edit', 'Bearbeiten', () => identityDialog(a, i)),
+      a.identities.length > 1 ? iconButton('trash', 'Löschen', async () => {
+        if (!(await confirmDialog('Identität löschen', `${i.email} entfernen?`, { confirmLabel: 'Löschen' }))) return;
+        try { await del(`/identities/${i.id}`); await loadAccounts(); render(document.getElementById('main'), { parts: ['settings', 'accounts', String(a.id)] }); } catch (err) { toast(err.message, 'error'); }
+      }) : null))),
+    h('button', { class: 'btn', type: 'button', onClick: () => identityDialog(a, null) }, icon('plus', 16), 'Identität hinzufügen'),
+    h('h3', {}, 'Server-Einstellungen'));
+  accountForm(c, a, true);
+}
+
+function presetFor(email) {
+  const domain = String(email || '').split('@')[1];
+  if (!domain) return null;
+  return PRESETS.find((p) => p.domains.includes(domain.toLowerCase()))
+    || { name: domain, imapHost: `imap.${domain}`, imapPort: 993, imapSecurity: 'ssl', smtpHost: `smtp.${domain}`, smtpPort: 465, smtpSecurity: 'ssl', saveSent: true, guessed: true };
+}
+
+function secSelect(name, value) {
+  return h('select', { name }, [['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unsicher)']]
+    .map(([v, l]) => h('option', { value: v, selected: v === value }, l)));
+}
+
+function accountForm(c, a, append = false) {
+  const isNew = !a;
+  const v = a || { name: '', email: '', imapHost: '', imapPort: 993, imapSecurity: 'ssl', imapUser: '', smtpHost: '', smtpPort: 465, smtpSecurity: 'ssl', smtpUser: '', smtpSameCredentials: true, allowInsecureTls: false, saveSent: true, enabled: true, color: '#3b6fd8' };
+  const hint = h('div', { class: 'hint-box', hidden: true });
+  const result = h('div', { class: 'test-result' });
+  const smtpCreds = h('div', { class: 'row2', hidden: v.smtpSameCredentials });
+
+  const form = h('form', { class: 'form-grid account-form', autocomplete: 'off' },
+    isNew ? h('div', { class: 'section-head' }, h('a', { href: '#/settings/accounts', class: 'icon-btn', title: 'Zurück' }, icon('back')), h('h2', {}, 'Neues E-Mail-Konto')) : null,
+    h('div', { class: 'row2' },
+      field('E-Mail-Adresse', h('input', { name: 'email', type: 'email', value: v.email, required: true, autocomplete: 'off' })),
+      field('Kontoname', h('input', { name: 'name', value: v.name, placeholder: 'z. B. Privat, Arbeit' }))),
+    isNew ? field('Dein Name (Absender)', h('input', { name: 'senderName', value: state.user.displayName || '' })) : null,
+    h('div', { class: 'row2' },
+      field(isNew ? 'Passwort' : 'Passwort (leer = unverändert)', h('input', { name: 'imapPass', type: 'password', autocomplete: 'new-password' })),
+      field('Farbe', h('input', { name: 'color', type: 'color', value: v.color }))),
+    hint,
+    h('fieldset', {}, h('legend', {}, 'Posteingang (IMAP)'),
+      h('div', { class: 'row3' },
+        field('Server', h('input', { name: 'imapHost', value: v.imapHost, required: true })),
+        field('Port', h('input', { name: 'imapPort', type: 'number', value: v.imapPort, min: 1, max: 65535 })),
+        field('Verschlüsselung', secSelect('imapSecurity', v.imapSecurity))),
+      field('Benutzername', h('input', { name: 'imapUser', value: v.imapUser, placeholder: 'meist die E-Mail-Adresse' }))),
+    h('fieldset', {}, h('legend', {}, 'Postausgang (SMTP)'),
+      h('div', { class: 'row3' },
+        field('Server', h('input', { name: 'smtpHost', value: v.smtpHost, required: true })),
+        field('Port', h('input', { name: 'smtpPort', type: 'number', value: v.smtpPort, min: 1, max: 65535 })),
+        field('Verschlüsselung', secSelect('smtpSecurity', v.smtpSecurity))),
+      h('label', { class: 'check' }, h('input', {
+        type: 'checkbox', name: 'smtpSameCredentials', checked: v.smtpSameCredentials,
+        onChange: (e) => { smtpCreds.hidden = e.target.checked; },
+      }), ' Gleiche Zugangsdaten wie IMAP'),
+      smtpCreds),
+    h('fieldset', {}, h('legend', {}, 'Optionen'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'saveSent', checked: v.saveSent }), ' Gesendete Nachrichten im Ordner „Gesendet“ ablegen'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'enabled', checked: v.enabled }), ' Konto aktiv (synchronisieren)'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'allowInsecureTls', checked: v.allowInsecureTls }), ' Ungültige/selbstsignierte Zertifikate akzeptieren')),
+    result,
+    h('div', { class: 'form-actions' },
+      !isNew ? h('button', { class: 'btn btn-danger', type: 'button', onClick: async () => {
+        if (!(await confirmDialog('Konto entfernen', `„${a.name}“ aus Webmail entfernen? Die Mails auf dem Server bleiben erhalten.`, { confirmLabel: 'Entfernen' }))) return;
+        try { await del(`/accounts/${a.id}`); await loadAccounts(); localStorage.removeItem('wm.lastFolder'); location.hash = '#/settings/accounts'; toast('Konto entfernt'); } catch (err) { toast(err.message, 'error'); }
+      } }, 'Konto entfernen') : null,
+      h('span', { class: 'grow' }),
+      h('button', { class: 'btn', type: 'button', onClick: () => test() }, 'Verbindung testen'),
+      h('button', { class: 'btn btn-primary', type: 'submit' }, isNew ? 'Hinzufügen' : 'Speichern')));
+
+  smtpCreds.append(
+    field('SMTP-Benutzer', h('input', { name: 'smtpUser', value: v.smtpUser })),
+    field('SMTP-Passwort', h('input', { name: 'smtpPass', type: 'password', autocomplete: 'new-password', placeholder: isNew ? '' : 'leer = unverändert' })));
+
+  // Port und Verschlüsselung zusammenhalten (993/465 = SSL/TLS, 143/587/25 = STARTTLS)
+  const STD = { imap: { 993: 'ssl', 143: 'starttls' }, smtp: { 465: 'ssl', 587: 'starttls', 25: 'starttls' } };
+  for (const kind of ['imap', 'smtp']) {
+    const portEl = form.querySelector(`[name=${kind}Port]`);
+    const secEl = form.querySelector(`[name=${kind}Security]`);
+    portEl.addEventListener('change', () => {
+      const std = STD[kind][Number(portEl.value)];
+      if (std === 'ssl') secEl.value = 'ssl';
+      else if (std === 'starttls' && secEl.value === 'ssl') secEl.value = 'starttls';
+    });
+    secEl.addEventListener('change', () => {
+      const p = Number(portEl.value);
+      if (secEl.value === 'ssl' && STD[kind][p] === 'starttls') portEl.value = kind === 'imap' ? 993 : 465;
+      if (secEl.value !== 'ssl' && STD[kind][p] === 'ssl') portEl.value = kind === 'imap' ? 143 : 587;
+    });
+  }
+
+  const set = (name, value) => { const el = form.querySelector(`[name="${name}"]`); if (el) { if (el.type === 'checkbox') el.checked = value; else el.value = value; } };
+  if (isNew) {
+    const email = form.querySelector('[name=email]');
+    email.addEventListener('change', () => {
+      const p = presetFor(email.value);
+      if (!p) return;
+      set('imapHost', p.imapHost); set('imapPort', p.imapPort); set('imapSecurity', p.imapSecurity);
+      set('smtpHost', p.smtpHost); set('smtpPort', p.smtpPort); set('smtpSecurity', p.smtpSecurity);
+      set('saveSent', p.saveSent);
+      set('imapUser', email.value);
+      if (!form.querySelector('[name=name]').value) set('name', p.guessed ? email.value : p.name);
+      hint.hidden = !(p.hint || p.guessed);
+      hint.textContent = p.hint || 'Servereinstellungen wurden geraten – bitte bei deinem Anbieter prüfen.';
+    });
+  }
+
+  const payload = () => {
+    const d = formValues(form);
+    if (a) d.id = a.id;
+    return d;
+  };
+  const test = async () => {
+    clear(result, h('span', { class: 'spinner' }), ' Teste Verbindung…');
+    try {
+      const r = await post('/accounts/test', payload());
+      clear(result,
+        h('div', { class: r.imap.ok ? 'ok-text' : 'error-text' }, r.imap.ok ? `✓ IMAP verbunden (${r.imap.folders} Ordner)` : `✗ IMAP: ${r.imap.error}`),
+        h('div', { class: r.smtp.ok ? 'ok-text' : 'error-text' }, r.smtp.ok ? '✓ SMTP verbunden' : `✗ SMTP: ${r.smtp.error}`));
+    } catch (err) {
+      clear(result, h('div', { class: 'error-text' }, err.message));
+    }
+  };
+  form.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const btn = form.querySelector('[type=submit]');
+    btn.disabled = true;
+    clear(result, h('span', { class: 'spinner' }), isNew ? ' Verbinde und lege Konto an…' : ' Speichere…');
+    try {
+      if (isNew) {
+        const r = await post('/accounts', payload());
+        await loadAccounts();
+        toast('Konto hinzugefügt – Synchronisierung läuft', 'success');
+        location.hash = `#/settings/accounts/${r.account.id}`;
+      } else {
+        await patch(`/accounts/${a.id}`, payload());
+        await loadAccounts();
+        toast('Gespeichert – Konto verbindet neu', 'success');
+        clear(result);
+      }
+    } catch (err) {
+      clear(result, h('div', { class: 'error-text' }, err.message));
+    } finally {
+      btn.disabled = false;
+    }
+  });
+  if (append) c.appendChild(form); else clear(c, form);
+}
+
+function identityDialog(a, i) {
+  const v = i || { name: state.user.displayName || '', email: '', replyTo: '', bcc: '', signature: '', isDefault: false };
+  const form = h('form', { class: 'form-grid' },
+    h('div', { class: 'row2' },
+      field('Name', h('input', { name: 'name', value: v.name })),
+      field('E-Mail-Adresse', h('input', { name: 'email', type: 'email', value: v.email, required: true }))),
+    h('div', { class: 'row2' },
+      field('Antwort an (optional)', h('input', { name: 'replyTo', type: 'email', value: v.replyTo })),
+      field('Immer Bcc an (optional)', h('input', { name: 'bcc', type: 'email', value: v.bcc }))),
+    field('Signatur', h('textarea', { name: 'signature', rows: 5 }, v.signature), 'Text oder einfaches HTML. Wird mit „-- “ abgetrennt eingefügt.'),
+    h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'isDefault', checked: v.isDefault }), ' Standard-Identität dieses Kontos'));
+  modal({
+    title: i ? 'Identität bearbeiten' : 'Neue Identität',
+    wide: true,
+    body: form,
+    actions: [
+      { label: 'Abbrechen' },
+      { label: 'Speichern', primary: true, onClick: async () => {
+        const d = formValues(form);
+        if (i) await patch(`/identities/${i.id}`, d);
+        else await post(`/accounts/${a.id}/identities`, d);
+        await loadAccounts();
+        const fresh = state.accounts.find((x) => x.id === a.id);
+        const main = document.querySelector('.settings-content');
+        if (fresh && main) accountDetail(main, fresh);
+        toast('Identität gespeichert', 'success');
+      } },
+    ],
+  });
+}
+
+// ====================================================================== DAV
+
+async function davSection(c) {
+  clear(c, h('span', { class: 'spinner' }));
+  let info;
+  let cols = { collections: [], errors: [] };
+  try {
+    info = await get('/dav/sources');
+    cols = await get('/dav/collections', { fresh: 1 });
+  } catch (err) {
+    clear(c, h('div', { class: 'banner banner-error' }, err.message));
+    return;
+  }
+  const colRows = (sourceId) => cols.collections.filter((x) => x.sourceId === sourceId).map((x) => h('li', {},
+    x.type === 'calendar' ? h('span', { class: 'cal-dot', style: { background: x.color || '#3b6fd8' } }) : icon('contacts', 14),
+    ' ', x.name, ' ', h('span', { class: 'muted small' }, x.type === 'calendar' ? 'Kalender' : 'Adressbuch')));
+
+  clear(c,
+    h('div', { class: 'section-head' }, h('h2', {}, 'Kalender & Kontakte'),
+      h('button', { class: 'btn btn-primary', type: 'button', onClick: () => addSourceDialog(c) }, icon('plus', 16), 'Server hinzufügen')),
+    h('p', { class: 'muted small' }, 'Webmail zeigt und bearbeitet Kalender und Kontakte direkt auf deinem CalDAV/CardDAV-Server – z. B. Nextcloud, mailcow/SOGo, Radicale, Baïkal, mailbox.org, Fastmail oder iCloud (mit App-Passwort). Die Daten bleiben dort und sind weiterhin mit Handy und Thunderbird synchron.'),
+    cols.errors.map((e) => h('div', { class: 'banner banner-error' }, `${e.sourceName}: ${e.message}`)),
+    info.sources.length ? h('div', { class: 'card-list' }, info.sources.map((s) => h('div', { class: 'ident-card' },
+      h('div', { class: 'grow' }, h('strong', {}, s.name), h('div', { class: 'muted small' }, `${s.url} · ${s.username}`),
+        h('ul', { class: 'col-list' }, colRows(String(s.id)))),
+      iconButton('trash', 'Entfernen', async () => {
+        if (!(await confirmDialog('Server entfernen', `„${s.name}“ entfernen? Die Daten auf dem Server bleiben erhalten.`, { confirmLabel: 'Entfernen' }))) return;
+        await del(`/dav/sources/${s.id}`);
+        davSection(c);
+      })))) : h('div', { class: 'info-card' }, h('p', {}, 'Noch kein Server eingebunden.'),
+      h('button', { class: 'btn', type: 'button', onClick: () => addSourceDialog(c) }, icon('plus', 16), 'Server hinzufügen')));
+}
+
+function addSourceDialog(c) {
+  const form = h('form', { class: 'form-grid' },
+    field('Name', h('input', { name: 'name', placeholder: 'z. B. Nextcloud' })),
+    field('URL', h('input', { name: 'url', type: 'url', required: true, placeholder: 'https://cloud.example.com/remote.php/dav' }),
+      'Kalender und Adressbücher werden automatisch gefunden. Beispiele: Nextcloud https://cloud.example.com/remote.php/dav · mailcow/SOGo https://mail.example.com/SOGo/dav · Radicale/Baïkal: Basis-URL des Servers'),
+    h('div', { class: 'row2' },
+      field('Benutzername', h('input', { name: 'username', autocomplete: 'off' })),
+      field('Passwort', h('input', { name: 'password', type: 'password', autocomplete: 'new-password' }))));
+  modal({
+    title: 'CalDAV/CardDAV-Server hinzufügen',
+    wide: true,
+    body: form,
+    actions: [
+      { label: 'Abbrechen' },
+      { label: 'Verbinden', primary: true, onClick: async () => {
+        const r = await post('/dav/sources', formValues(form));
+        toast(`${r.found} Kalender/Adressbücher gefunden`, 'success');
+        davSection(c);
+      } },
+    ],
+  });
+}
+
+// ====================================================================== Profil
+
+function profileSection(c) {
+  const nameForm = h('form', { class: 'form-grid narrow' },
+    field('Anzeigename', h('input', { name: 'displayName', value: state.user.displayName || '' })),
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Speichern')));
+  nameForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    try {
+      const r = await patch('/me', formValues(nameForm));
+      state.user = r.user;
+      toast('Gespeichert', 'success');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  const pwForm = h('form', { class: 'form-grid narrow' },
+    field('Aktuelles Passwort', h('input', { name: 'current', type: 'password', autocomplete: 'current-password', required: true })),
+    field(`Neues Passwort (mind. ${state.config.passwordMinLength || 8} Zeichen)`, h('input', { name: 'password', type: 'password', autocomplete: 'new-password', required: true, minlength: state.config.passwordMinLength || 8 })),
+    field('Neues Passwort wiederholen', h('input', { name: 'password2', type: 'password', autocomplete: 'new-password', required: true })),
+    h('div', { class: 'form-actions' }, h('button', { class: 'btn btn-primary', type: 'submit' }, 'Passwort ändern')));
+  pwForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const d = formValues(pwForm);
+    if (d.password !== d.password2) { toast('Die Passwörter stimmen nicht überein', 'error'); return; }
+    try {
+      await post('/me/password', d);
+      pwForm.reset();
+      toast('Passwort geändert – andere Sitzungen wurden abgemeldet. Denk an deine CalDAV/CardDAV-Programme.', 'success', 7000);
+    } catch (err) { toast(err.message, 'error'); }
+  });
+
+  const replySel = h('select', {},
+    [['original', 'Im Ordner der beantworteten Nachricht'],
+      ['original_noinbox', 'Im Ordner der beantworteten Nachricht – ausser Posteingang (dann „Gesendet“)'],
+      ['sent', 'Immer im Ordner „Gesendet“']]
+      .map(([v, l]) => h('option', { value: v, selected: (state.user.settings.replyFolder || 'original') === v }, l)));
+  replySel.addEventListener('change', async () => {
+    const r = await patch('/me', { settings: { replyFolder: replySel.value } });
+    state.user = r.user;
+    toast('Gespeichert');
+  });
+  const mailPrefs = h('div', { class: 'form-grid narrow' },
+    field('Antworten ablegen', replySel, 'Gilt für „Antworten“ und „Allen antworten“. Antworten auf Nachrichten aus Gesendet, Papierkorb oder Spam landen immer in „Gesendet“.'));
+
+  const notifOn = state.user.settings.notifications !== false;
+  const remCfg = reminders.settings();
+  const remDefault = h('select', { disabled: !remCfg.enabled },
+    h('option', { value: 'none', selected: remCfg.defaultMinutes === null }, 'Keine'),
+    reminders.REMINDER_OPTIONS.map(([m, l]) => h('option', { value: String(m), selected: remCfg.defaultMinutes === m }, l)));
+  remDefault.addEventListener('change', async () => {
+    const v = remDefault.value === 'none' ? null : Number(remDefault.value);
+    const r = await patch('/me', { settings: { reminderDefault: v } });
+    state.user = r.user;
+    reminders.reschedule();
+    toast('Gespeichert');
+  });
+  const perm = 'Notification' in window ? Notification.permission : 'unsupported';
+  const notif = h('div', { class: 'form-grid narrow' },
+    h('label', { class: 'check' }, h('input', {
+      type: 'checkbox', checked: notifOn,
+      onChange: async (e) => {
+        const r = await patch('/me', { settings: { notifications: e.target.checked } });
+        state.user = r.user;
+        if (e.target.checked && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+      },
+    }), ' Desktop-Benachrichtigung bei neuen Nachrichten im Posteingang'),
+    h('label', { class: 'check' }, h('input', {
+      type: 'checkbox', checked: remCfg.enabled,
+      onChange: async (e) => {
+        const r = await patch('/me', { settings: { reminders: e.target.checked } });
+        state.user = r.user;
+        remDefault.disabled = !e.target.checked;
+        if (e.target.checked && 'Notification' in window && Notification.permission === 'default') await Notification.requestPermission();
+        reminders.reschedule();
+      },
+    }), ' Erinnerung an anstehende Kalendertermine'),
+    field('Standard-Erinnerung (für Termine ohne eigene Erinnerung)', remDefault,
+      'Ganztägige Termine: um 09:00 Uhr am Tag selbst. Erinnerungen kommen, solange ein Webmail-Tab geöffnet ist.'),
+    perm === 'default' ? h('button', { class: 'btn', type: 'button', onClick: async () => { await Notification.requestPermission(); profileSection(c); } }, 'Browser-Berechtigung erteilen') : null,
+    perm === 'denied' ? h('p', { class: 'muted small' }, 'Benachrichtigungen sind im Browser blockiert – in den Website-Einstellungen des Browsers erlauben. Erinnerungen erscheinen bis dahin nur in der Seite.') : null,
+    perm === 'unsupported' ? h('p', { class: 'muted small' }, 'Dieser Browser unterstützt keine Benachrichtigungen.') : null);
+
+  clear(c,
+    h('div', { class: 'section-head' }, h('h2', {}, 'Profil')),
+    h('p', { class: 'muted' }, `Angemeldet als ${state.user.username}${state.user.isAdmin ? ' (Administrator)' : ''}`),
+    nameForm,
+    h('h3', {}, 'E-Mail'), mailPrefs,
+    h('h3', {}, 'Benachrichtigungen'), notif,
+    h('h3', {}, 'Passwort ändern'),
+    state.user.authSource === 'imap' && !state.config.ldapPasswordChange
+      ? h('p', { class: 'muted' }, 'Du meldest dich mit dem Passwort deines Mailservers an. Ändere es dort – beim nächsten Login übernimmt Webmail das neue Passwort automatisch für dein Postfach.')
+      : [state.user.authSource === 'imap'
+        ? h('p', { class: 'muted small' }, 'Das Passwort wird im zentralen Verzeichnis (LDAP) geändert und gilt danach für E-Mail, Webmail und alle angebundenen Dienste. Aktualisiere es anschliessend auch in Mail-Programmen auf Handy und Computer.')
+        : null, pwForm],
+    h('h3', {}, 'Tastenkürzel'),
+    h('table', { class: 'shortcuts' }, [
+      ['c', 'Neue Nachricht'], ['j / k', 'Nächste / vorherige Konversation'], ['r', 'Antworten'], ['a', 'Allen antworten'],
+      ['f', 'Weiterleiten'], ['e', 'Archivieren'], ['# / Entf', 'Löschen'], ['s', 'Markieren'], ['u', 'Als ungelesen markieren'],
+      ['v', 'Verschieben'], ['/', 'Suchen'], ['Strg+Enter', 'Senden (im Editor)'],
+    ].map(([k, d]) => h('tr', {}, h('td', {}, h('kbd', {}, k)), h('td', {}, d)))));
+}

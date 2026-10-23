@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="de-CH">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#f6f7f9" media="(prefers-color-scheme: light)">
+  <meta name="theme-color" content="#16181d" media="(prefers-color-scheme: dark)">
+  <title>Webmail</title>
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/app.css">
+  <script type="module" src="/js/main.js"></script>
+</head>
+<body>
+  <div id="login" class="login" hidden></div>
+
+  <div id="shell" class="shell" hidden>
+    <header class="appbar">
+      <button id="btn-menu" class="icon-btn appbar-menu" type="button" aria-label="Ordner anzeigen" title="Ordner">
+        <svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M4 6h16M4 12h16M4 18h16"/></svg>
+      </button>
+      <div class="brand">
+        <span class="brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 6h18v12H3zM3 6l9 7 9-7"/></svg>
+        </span>
+        <span class="brand-name">Webmail</span>
+        <span id="conn" class="conn offline" title="Verbinde…"></span>
+      </div>
+      <nav id="nav" class="appnav" aria-label="Hauptnavigation"></nav>
+      <div id="appbar-user" class="appbar-user"></div>
+    </header>
+    <div class="shell-body">
+      <aside class="sidebar" id="sidebar">
+        <button id="btn-compose" class="btn btn-primary compose-btn" type="button">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 20h4L19 9l-4-4L4 16z"/></svg>
+          Neue E-Mail
+        </button>
+        <div id="folder-tree" class="folder-tree"></div>
+      </aside>
+      <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+      <main id="main" class="main"></main>
+    </div>
+  </div>
+
+  <div id="compose-root"></div>
+  <div id="modal-root"></div>
+  <div id="toast-root" class="toast-root" aria-live="polite"></div>
+</body>
+</html>

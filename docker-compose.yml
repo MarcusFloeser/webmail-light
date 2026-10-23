@@ -1,0 +1,84 @@
+name: webmail
+
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: webmail
+      POSTGRES_USER: webmail
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD in .env setzen}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U webmail -d webmail"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks: [internal]
+
+  app:
+    build: ./app
+    restart: unless-stopped
+    image: ghcr.io/marcusfloeser/webmail-light:latest
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://webmail:${POSTGRES_PASSWORD}@db:5432/webmail
+      SECRET_KEY: ${SECRET_KEY:?SECRET_KEY in .env setzen}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-false}
+      ALLOW_REGISTRATION: ${ALLOW_REGISTRATION:-false}
+      SYNC_INITIAL_MESSAGES: ${SYNC_INITIAL_MESSAGES:-1000}
+      POLL_INTERVAL_SECONDS: ${POLL_INTERVAL_SECONDS:-120}
+      TRUST_PROXY: ${TRUST_PROXY:-false}
+      AUTH_MODE: ${AUTH_MODE:-local}
+      AUTH_IMAP_HOST: ${AUTH_IMAP_HOST:-}
+      AUTH_IMAP_PORT: ${AUTH_IMAP_PORT:-993}
+      AUTH_IMAP_SECURITY: ${AUTH_IMAP_SECURITY:-}
+      AUTH_SMTP_HOST: ${AUTH_SMTP_HOST:-}
+      AUTH_SMTP_PORT: ${AUTH_SMTP_PORT:-465}
+      AUTH_SMTP_SECURITY: ${AUTH_SMTP_SECURITY:-}
+      AUTH_ALLOW_INSECURE_TLS: ${AUTH_ALLOW_INSECURE_TLS:-false}
+      AUTH_DEFAULT_DOMAIN: ${AUTH_DEFAULT_DOMAIN:-}
+      AUTH_ADMINS: ${AUTH_ADMINS:-}
+      AUTH_CREATE_ACCOUNT: ${AUTH_CREATE_ACCOUNT:-true}
+      AUTH_DAV_URL: ${AUTH_DAV_URL:-}
+      AUTH_DAV_NAME: ${AUTH_DAV_NAME:-Kalender & Kontakte}
+      PUBLIC_URL: ${PUBLIC_URL:-}
+      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-8}
+      PASSWORD_HELP_TEXT: ${PASSWORD_HELP_TEXT:-}
+      PASSWORD_RESET_MINUTES: ${PASSWORD_RESET_MINUTES:-30}
+      LDAP_URL: ${LDAP_URL:-}
+      LDAP_STARTTLS: ${LDAP_STARTTLS:-false}
+      LDAP_TLS_INSECURE: ${LDAP_TLS_INSECURE:-false}
+      LDAP_BIND_DN: ${LDAP_BIND_DN:-}
+      LDAP_BIND_PASSWORD: ${LDAP_BIND_PASSWORD:-}
+      LDAP_BASE_DN: ${LDAP_BASE_DN:-}
+      LDAP_USER_FILTER: ${LDAP_USER_FILTER:-}
+      LDAP_USER_DN_TEMPLATE: ${LDAP_USER_DN_TEMPLATE:-}
+      LDAP_MAIL_ATTR: ${LDAP_MAIL_ATTR:-mail}
+      LDAP_RECOVERY_ATTRS: ${LDAP_RECOVERY_ATTRS:-mailAlternateAddress}
+      LDAP_RECOVERY_FALLBACK_PRIMARY: ${LDAP_RECOVERY_FALLBACK_PRIMARY:-false}
+      LDAP_PASSWORD_METHOD: ${LDAP_PASSWORD_METHOD:-exop}
+      SYSTEM_SMTP_HOST: ${SYSTEM_SMTP_HOST:-}
+      SYSTEM_SMTP_PORT: ${SYSTEM_SMTP_PORT:-587}
+      SYSTEM_SMTP_SECURITY: ${SYSTEM_SMTP_SECURITY:-}
+      SYSTEM_SMTP_USER: ${SYSTEM_SMTP_USER:-}
+      SYSTEM_SMTP_PASSWORD: ${SYSTEM_SMTP_PASSWORD:-}
+      SYSTEM_SMTP_TLS_INSECURE: ${SYSTEM_SMTP_TLS_INSECURE:-false}
+      SYSTEM_MAIL_FROM: ${SYSTEM_MAIL_FROM:-}
+      TZ: ${TZ:-Europe/Zurich}
+    ports:
+      - "${HTTP_BIND:-127.0.0.1}:${HTTP_PORT:-8080}:8080"
+    networks: [internal, web]
+
+volumes:
+  db-data:
+
+networks:
+  internal:
+    internal: true   # Datenbank ohne Internetzugang
+  web:

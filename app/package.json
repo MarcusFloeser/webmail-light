@@ -1,0 +1,22 @@
+{
+  "name": "webmail",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mehrbenutzer-Webmail mit IMAP-Push, Threads, CalDAV und CardDAV",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js"
+  },
+  "engines": { "node": ">=20" },
+  "dependencies": {
+    "express": "^4.21.2",
+    "fast-xml-parser": "^4.5.1",
+    "ical.js": "1.5.0",
+    "imapflow": "^1.0.184",
+    "ldapts": "^7.0.0",
+    "mailparser": "^3.7.2",
+    "nodemailer": "^6.9.16",
+    "pg": "^8.13.1",
+    "ws": "^8.18.0"
+  }
+}
