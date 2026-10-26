@@ -168,7 +168,7 @@ async function ensureAdmin() {
   const count = await db.one('SELECT count(*)::int AS n FROM users');
   if (count.n > 0) return;
   if (config.authMode === 'imap' && !config.adminPassword) {
-    console.log(`[auth] IMAP-Anmeldung aktiv (${config.authImap.host}). Administratoren: ${config.authAdmins.join(', ') || '(keine – AUTH_ADMINS setzen)'}`);
+    console.log(`[auth] IMAP-Anmeldung aktiv (Mailserver je Domain, siehe Benutzer → Domains). Administratoren: ${config.authAdmins.join(', ') || '(keine – AUTH_ADMINS setzen)'}`);
     return;
   }
   let pw = config.adminPassword;

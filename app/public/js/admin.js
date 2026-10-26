@@ -1,17 +1,23 @@
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, formValues, fullDate } from './ui.js';
-import { get, post, patch, del } from './api.js';
+import { get, post, put, patch, del } from './api.js';
 import { state } from './state.js';
 
 export function unmount() {}
 
-export async function render(main) {
+export async function render(main, route) {
   if (!state.user.isAdmin) {
     clear(main, h('div', { class: 'empty-state' }, h('p', {}, 'Nur für Administratoren.')));
     return;
   }
-  const c = h('div', { class: 'settings-view' }, h('div', { class: 'settings-content wide' }, h('span', { class: 'spinner' })));
+  const section = (route && route.parts && route.parts[1]) || 'users';
+  const content = h('div', { class: 'settings-content wide' }, h('span', { class: 'spinner' }));
+  const c = h('div', { class: 'settings-view' },
+    h('nav', { class: 'settings-tabs' },
+      h('a', { href: '#/admin', class: section === 'users' ? 'active' : '' }, 'Benutzer'),
+      h('a', { href: '#/admin/domains', class: section === 'domains' ? 'active' : '' }, 'Domains & Mailserver')),
+    content);
   clear(main, c);
-  const content = c.firstChild;
+  if (section === 'domains') { await domainsSection(main, content); return; }
   let users;
   try {
     users = (await get('/admin/users')).users;
@@ -39,7 +45,7 @@ export async function render(main) {
           iconButton('edit', 'Bearbeiten', () => userDialog(main, u)),
           u.id !== state.user.id ? iconButton('trash', 'Löschen', async () => {
             if (!(await confirmDialog('Benutzer löschen', `„${u.username}“ mit allen Einstellungen aus Webmail entfernen? Mails, Kalender und Kontakte auf den Servern bleiben erhalten.`, { confirmLabel: 'Löschen' }))) return;
-            try { await del(`/admin/users/${u.id}`); toast('Benutzer gelöscht'); render(main); } catch (err) { toast(err.message, 'error'); }
+            try { await del(`/admin/users/${u.id}`); toast('Benutzer gelöscht'); render(main, { parts: ['admin'] }); } catch (err) { toast(err.message, 'error'); }
           }) : null))))));
 }
 
@@ -104,7 +110,138 @@ function userDialog(main, u) {
         if (u) await patch(`/admin/users/${u.id}`, d);
         else await post('/admin/users', d);
         toast('Gespeichert', 'success');
-        render(main);
+        render(main, { parts: ['admin'] });
+      } },
+    ],
+  });
+}
+
+// ====================================================================== Domains & Mailserver
+
+const SEC_LABEL = { ssl: 'SSL/TLS', starttls: 'STARTTLS', none: 'unverschlüsselt' };
+
+async function domainsSection(main, content) {
+  let data;
+  try {
+    data = await get('/admin/domains');
+  } catch (err) {
+    clear(content, h('div', { class: 'banner banner-error' }, err.message));
+    return;
+  }
+  const reload = () => render(main, { parts: ['admin', 'domains'] });
+  const custom = h('label', { class: 'check' }, h('input', {
+    type: 'checkbox', checked: data.allowCustomServers,
+    onChange: async (e) => {
+      try { await put('/admin/settings', { allowCustomServers: e.target.checked }); toast('Gespeichert'); } catch (err) { toast(err.message, 'error'); }
+    },
+  }), ' Benutzer dürfen zusätzliche Konten bei anderen Mailservern einrichten (z. B. Gmail, GMX)');
+
+  clear(content,
+    h('div', { class: 'section-head' }, h('h2', {}, 'Domains & Mailserver'),
+      h('button', { class: 'btn btn-primary', type: 'button', onClick: () => domainDialog(null, reload) }, icon('plus', 16), 'Domain hinzufügen')),
+    h('p', { class: 'muted small' },
+      'Pro Domain sind Posteingang (IMAP) und Postausgang (SMTP) fest eingestellt. Benutzer melden sich mit ihrer E-Mail-Adresse an; '
+      + 'die Domain der Adresse bestimmt den Server. „*“ gilt für alle übrigen Domains. Endbenutzer sehen diese Angaben nicht.'),
+    data.domains.length ? h('table', { class: 'data-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Domain'), h('th', {}, 'Posteingang (IMAP)'), h('th', {}, 'Postausgang (SMTP)'),
+        h('th', {}, 'Anmeldung'), h('th', {}, 'Konten'), h('th', {}, ''))),
+      h('tbody', {}, data.domains.map((d) => h('tr', {},
+        h('td', {}, h('strong', {}, d.isDefault ? '* (alle übrigen)' : d.domain), d.note ? h('div', { class: 'muted small' }, d.note) : null),
+        h('td', { class: 'small' }, h('code', {}, `${d.imapHost}:${d.imapPort}`), h('div', { class: 'muted' }, SEC_LABEL[d.imapSecurity] || d.imapSecurity)),
+        h('td', { class: 'small' }, h('code', {}, `${d.smtpHost}:${d.smtpPort}`), h('div', { class: 'muted' }, SEC_LABEL[d.smtpSecurity] || d.smtpSecurity)),
+        h('td', { class: 'small' }, d.loginFormat === 'local' ? 'Teil vor dem @' : 'E-Mail-Adresse',
+          d.davUrl ? h('div', { class: 'muted', title: d.davUrl }, '+ Kalender/Kontakte') : null),
+        h('td', {}, String(d.accounts)),
+        h('td', { class: 'row-actions' },
+          iconButton('edit', 'Bearbeiten', () => domainDialog(d, reload)),
+          iconButton('trash', 'Löschen', async () => {
+            const warn = d.accounts ? ` ${d.accounts} Konto/Konten behalten ihre aktuellen Einstellungen, werden aber nicht mehr zentral verwaltet.` : '';
+            if (!(await confirmDialog('Domain löschen', `„${d.domain}“ löschen?${warn}`, { confirmLabel: 'Löschen' }))) return;
+            try { await del(`/admin/domains/${d.id}`, { force: '1' }); toast('Domain gelöscht'); reload(); } catch (err) { toast(err.message, 'error'); }
+          })))))) : h('div', { class: 'banner' }, 'Noch keine Domain eingerichtet. Lege zuerst eine Domain an – z. B. „*“ für deinen Mailserver.'),
+    h('h3', { style: { marginTop: '28px' } }, 'Optionen'),
+    custom,
+    h('p', { class: 'muted small' }, data.unassigned
+      ? `${data.unassigned} Konto/Konten nutzen einen eigenen Server (nicht zentral verwaltet). Konten, deren Domain eingerichtet ist oder die auf dem Server von „*“ liegen, werden automatisch zugeordnet.`
+      : 'Alle Konten werden zentral verwaltet.'),
+    data.unassigned ? h('button', {
+      class: 'btn', type: 'button', onClick: async () => {
+        try { const r = await post('/admin/domains/assign'); toast(`${r.assigned} Konto/Konten zugeordnet`, 'success'); reload(); } catch (err) { toast(err.message, 'error'); }
+      },
+    }, 'Bestehende Konten jetzt zuordnen') : null);
+}
+
+function secOptions(value) {
+  return [['', 'Automatisch (nach Port)'], ['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unverschlüsselt)']]
+    .map(([v, l]) => h('option', { value: v, selected: v === (value || '') }, l));
+}
+
+function domainDialog(d, done) {
+  const v = d || { domain: '', imapHost: '', imapPort: 993, imapSecurity: '', smtpHost: '', smtpPort: 587, smtpSecurity: '', loginFormat: 'email', allowInsecureTls: false, davUrl: '', note: '' };
+  const result = h('div', { class: 'test-result' });
+  const form = h('form', { class: 'form-grid' },
+    h('div', { class: 'row2' },
+      field('Domain', h('input', { name: 'domain', value: v.domain, required: true, placeholder: 'example.ch oder * für alle übrigen', autocapitalize: 'none' })),
+      field('Notiz (optional)', h('input', { name: 'note', value: v.note, placeholder: 'z. B. interner Server' }))),
+    h('fieldset', {}, h('legend', {}, 'Posteingang (IMAP)'),
+      h('div', { class: 'row3' },
+        field('Server (Name oder IP)', h('input', { name: 'imapHost', value: v.imapHost, required: true, placeholder: 'z. B. 192.168.1.23' })),
+        field('Port', h('input', { name: 'imapPort', type: 'number', value: v.imapPort, min: 1, max: 65535 })),
+        field('Verschlüsselung', h('select', { name: 'imapSecurity' }, secOptions(v.imapSecurity))))),
+    h('fieldset', {}, h('legend', {}, 'Postausgang (SMTP)'),
+      h('div', { class: 'row3' },
+        field('Server (Name oder IP)', h('input', { name: 'smtpHost', value: v.smtpHost, required: true })),
+        field('Port', h('input', { name: 'smtpPort', type: 'number', value: v.smtpPort, min: 1, max: 65535 })),
+        field('Verschlüsselung', h('select', { name: 'smtpSecurity' }, secOptions(v.smtpSecurity))))),
+    h('fieldset', {}, h('legend', {}, 'Anmeldung & Optionen'),
+      field('Benutzername am Mailserver', h('select', { name: 'loginFormat' },
+        h('option', { value: 'email', selected: v.loginFormat !== 'local' }, 'Vollständige E-Mail-Adresse (name@domain)'),
+        h('option', { value: 'local', selected: v.loginFormat === 'local' }, 'Nur Teil vor dem @ (name)'))),
+      field('Kalender & Kontakte (optional)', h('input', { name: 'davUrl', value: v.davUrl, placeholder: 'https://cloud.example.ch/remote.php/dav' }),
+        'Wird beim Login automatisch mit denselben Zugangsdaten eingebunden.'),
+      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'allowInsecureTls', checked: v.allowInsecureTls }), ' Ungültige/selbstsignierte Zertifikate akzeptieren (z. B. interner Server)')),
+    h('fieldset', {}, h('legend', {}, 'Verbindung testen'),
+      h('p', { class: 'muted small' }, 'Ohne Zugangsdaten wird nur die Erreichbarkeit geprüft. Mit einer Test-Adresse und deren Passwort zusätzlich die Anmeldung.'),
+      h('div', { class: 'row2' },
+        field('Test-Adresse (optional)', h('input', { name: 'testEmail', type: 'email', autocomplete: 'off' })),
+        field('Passwort (optional)', h('input', { name: 'testPassword', type: 'password', autocomplete: 'new-password' }))),
+      h('div', {}, h('button', {
+        class: 'btn', type: 'button', onClick: async () => {
+          clear(result, h('span', { class: 'spinner' }), ' Teste …');
+          try {
+            const r = await post('/admin/domains/test', formValues(form));
+            const line = (ok, label, text) => h('div', { class: ok ? 'ok-text' : 'error-text' }, `${ok ? '✓' : '✗'} ${label}: ${text}`);
+            clear(result,
+              line(r.imap.ok, 'IMAP erreichbar', r.imap.ok ? `${r.imap.greeting} (${r.imap.ms} ms)` : r.imap.error),
+              line(r.smtp.ok, 'SMTP erreichbar', r.smtp.ok ? `${r.smtp.greeting} (${r.smtp.ms} ms)` : r.smtp.error),
+              r.login ? line(r.login.imap.ok, 'IMAP-Anmeldung', r.login.imap.ok ? `ok (${r.login.imap.folders} Ordner)` : r.login.imap.error) : null,
+              r.login ? line(r.login.smtp.ok, 'SMTP-Anmeldung', r.login.smtp.ok ? 'ok' : r.login.smtp.error) : null);
+          } catch (err) { clear(result, h('div', { class: 'error-text' }, err.message)); }
+        },
+      }, 'Verbindung testen')),
+      result));
+  // Port und Verschlüsselung: Standardport bei Wahl
+  const pairs = { imap: { ssl: 993, starttls: 143, none: 143 }, smtp: { ssl: 465, starttls: 587, none: 25 } };
+  for (const kind of ['imap', 'smtp']) {
+    const sec = form.querySelector(`[name=${kind}Security]`);
+    const port = form.querySelector(`[name=${kind}Port]`);
+    sec.addEventListener('change', () => { if (sec.value) port.value = pairs[kind][sec.value]; });
+  }
+  modal({
+    title: d ? `Domain ${d.isDefault ? '* (alle übrigen)' : d.domain}` : 'Neue Domain',
+    body: form,
+    wide: true,
+    actions: [
+      { label: 'Abbrechen' },
+      { label: 'Speichern', primary: true, onClick: async () => {
+        const body = formValues(form);
+        delete body.testEmail; delete body.testPassword;
+        const r = d ? await patch(`/admin/domains/${d.id}`, body) : await post('/admin/domains', body);
+        const parts = [];
+        if (r.updated) parts.push(`${r.updated} Konto/Konten umgestellt`);
+        if (r.assigned) parts.push(`${r.assigned} bestehende(s) Konto/Konten zugeordnet`);
+        toast(`Gespeichert${parts.length ? ` – ${parts.join(', ')}` : ''}`, 'success', 6000);
+        done();
       } },
     ],
   });

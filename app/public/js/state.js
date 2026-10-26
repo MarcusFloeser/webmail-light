@@ -21,8 +21,9 @@ export function notify(what) {
 }
 
 export async function loadAccounts() {
-  const { accounts } = await get('/accounts');
+  const { accounts, customServers } = await get('/accounts');
   state.accounts = accounts;
+  state.customServers = !!customServers; // dürfen eigene Mailserver eingetragen werden?
   notify('accounts');
   return accounts;
 }

@@ -56,16 +56,35 @@ In `.env` bleiben `COOKIE_SECURE=true` und `TRUST_PROXY=true` gesetzt (Standard 
 
 ## Anmeldung mit IMAP-Zugangsdaten
 
-Mit `AUTH_MODE=imap` meldet man sich mit Benutzername und Passwort des Mailservers an (`AUTH_IMAP_HOST`):
+Mit `AUTH_MODE=imap` meldet man sich mit E-Mail-Adresse und Passwort des Mailservers an. Welcher Server gilt, bestimmt die **Domain-Konfiguration** (siehe unten):
 
 - Beim **ersten Login** wird der Webmail-Benutzer angelegt und das Postfach automatisch als E-Mail-Konto mit Standard-Identität eingerichtet (SMTP über `AUTH_SMTP_*`, gleiche Zugangsdaten).
 - Ändert sich das Passwort am Mailserver, übernimmt Webmail es beim nächsten Login für das Postfach.
-- Mit `AUTH_DEFAULT_DOMAIN=example.com` reicht die Eingabe `marcus` statt `marcus@example.com`.
 - Angemeldet wird immer mit der **vollständigen E-Mail-Adresse** (Logins ohne `@` werden abgelehnt). Ausnahme: lokal angelegte Benutzer wie der Notfall-Admin (`ADMIN_USERNAME`) mit ihrem Benutzernamen.
 - Admin-Rechte bekommen die Logins in `AUTH_ADMINS`.
 - **„Angemeldet bleiben“** (auf der Anmeldeseite, standardmässig aktiv): Die Sitzung bleibt `SESSION_DAYS` Tage (Standard 30) nach der letzten Nutzung bestehen und verlängert sich bei jeder Nutzung. Ohne Häkchen endet sie beim Schliessen des Browsers bzw. nach `SESSION_IDLE_HOURS` Stunden ohne Aktivität. Der Browser merkt sich nur den Benutzernamen, nie das Passwort. Auf gemeinsam genutzten Geräten das Häkchen entfernen bzw. abmelden.
 - Mit `AUTH_DAV_URL` wird zusätzlich ein CalDAV/CardDAV-Server mit denselben Zugangsdaten eingebunden (z. B. Nextcloud oder SOGo, wenn dort dieselben Logins gelten).
 - Lokale Benutzer (z. B. ein Notfall-Admin mit `ADMIN_PASSWORD`, oder in der Benutzerverwaltung angelegte) melden sich weiterhin mit ihrem eigenen Passwort an. Ist der Mailserver nicht erreichbar, zeigt der Login das an, statt „Passwort falsch“ zu melden.
+
+## Domains & Mailserver (zentrale Konfiguration)
+
+Unter **Benutzer → Domains & Mailserver** (nur Admins) wird pro Domain fest eingestellt, mit welchem Mailserver Webmail verbindet:
+
+| Feld | Bedeutung |
+|---|---|
+| Domain | z. B. `example.ch` – oder `*` für alle übrigen Domains (Standard) |
+| Posteingang (IMAP) | Server (Name oder IP), Port, Verschlüsselung (automatisch nach Port, SSL/TLS, STARTTLS, keine) |
+| Postausgang (SMTP) | dito – mit denselben Zugangsdaten wie IMAP |
+| Benutzername am Mailserver | vollständige E-Mail-Adresse oder nur Teil vor dem `@` |
+| Kalender & Kontakte | optionaler CalDAV/CardDAV-Server, beim Login automatisch eingebunden |
+| Zertifikate | „Ungültige/selbstsignierte akzeptieren“ für interne Server |
+
+- So lassen sich **interne Domains** (z. B. `192.168.1.23:143`) und **externe Domains** (z. B. `mail.partner.ch:993`) nebeneinander betreiben. Die Domain der E-Mail-Adresse wählt den Server – beim Login und beim Hinzufügen weiterer Konten.
+- **Endbenutzer sehen keine Serverdaten** (Adresse, Port, Verschlüsselung) – weder in den Einstellungen noch in Fehlermeldungen. Neue Konten legen sie nur mit E-Mail-Adresse und Passwort an.
+- **Änderungen** an einer Domain werden sofort auf alle zugehörigen Konten übertragen; die Konten verbinden neu.
+- **Verbindung testen**: ohne Zugangsdaten nur Erreichbarkeit (Begrüssung von IMAP/SMTP), mit Test-Adresse + Passwort zusätzlich die Anmeldung.
+- **Eigene Mailserver** (z. B. Gmail) dürfen Benutzer nur einrichten, wenn der Admin die Option „Benutzer dürfen zusätzliche Konten bei anderen Mailservern einrichten“ aktiviert (Standard: aus). Bereits bestehende eigene Konten bleiben erhalten.
+- **Umstellung bestehender Installationen**: Beim ersten Start mit dieser Version wird aus `AUTH_IMAP_*` / `AUTH_SMTP_*` / `AUTH_DAV_URL` (.env) automatisch die Standard-Domain `*` angelegt. Alle bestehenden Konten auf diesem Server – und alle Konten, deren Domain eingerichtet ist – werden ihr zugeordnet. Danach werden die `AUTH_IMAP_*`/`AUTH_SMTP_*`-Werte nicht mehr verwendet; Änderungen erfolgen in der Oberfläche.
 
 ## Passwort ändern und „Passwort vergessen“ (LDAP)
 
@@ -111,8 +130,8 @@ Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. 
 | `POSTGRES_PASSWORD` | – | DB-Passwort (Pflicht) |
 | `SECRET_KEY` | – | Schlüssel für gespeicherte Passwörter (Pflicht, **nie ändern**, sonst müssen alle Konto-Passwörter neu eingegeben werden) |
 | `AUTH_MODE` | local | `imap` = Login mit den Zugangsdaten des Mailservers |
-| `AUTH_IMAP_HOST` / `_PORT` / `_SECURITY` | – / 993 / ssl | IMAP-Server für die Anmeldung und das automatisch angelegte Postfach |
-| `AUTH_SMTP_HOST` / `_PORT` / `_SECURITY` | wie IMAP / 465 / ssl | SMTP für das automatisch angelegte Postfach |
+| `AUTH_IMAP_HOST` / `_PORT` / `_SECURITY` | – / 993 / ssl | Nur noch für die **Ersteinrichtung**: daraus wird beim ersten Start die Standard-Domain `*` erzeugt (danach unter „Domains & Mailserver“ pflegen) |
+| `AUTH_SMTP_HOST` / `_PORT` / `_SECURITY` | wie IMAP / 465 / ssl | dito, für den Postausgang |
 | `AUTH_ALLOW_INSECURE_TLS` | false | Selbstsigniertes Zertifikat am Mailserver akzeptieren |
 | `AUTH_DEFAULT_DOMAIN` | – | Wird an Logins ohne `@` angehängt |
 | `AUTH_ADMINS` | – | Kommagetrennte Logins mit Admin-Rechten |

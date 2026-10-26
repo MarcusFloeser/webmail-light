@@ -89,7 +89,7 @@ function accountDetail(c, a) {
         try { await del(`/identities/${i.id}`); await loadAccounts(); render(document.getElementById('main'), { parts: ['settings', 'accounts', String(a.id)] }); } catch (err) { toast(err.message, 'error'); }
       }) : null))),
     h('button', { class: 'btn', type: 'button', onClick: () => identityDialog(a, null) }, icon('plus', 16), 'Identität hinzufügen'),
-    h('h3', {}, 'Server-Einstellungen'));
+    h('h3', {}, a.managed ? 'Konto-Einstellungen' : 'Server-Einstellungen'));
   accountForm(c, a, true);
 }
 
@@ -107,28 +107,46 @@ function secSelect(name, value) {
 
 function accountForm(c, a, append = false) {
   const isNew = !a;
+  // Verwaltet = Server aus der zentralen Domain-Konfiguration (für Endbenutzer unsichtbar)
+  let managed = a ? !!a.managed : !state.customServers;
   const v = a || { name: '', email: '', imapHost: '', imapPort: 993, imapSecurity: 'ssl', imapUser: '', smtpHost: '', smtpPort: 465, smtpSecurity: 'ssl', smtpUser: '', smtpSameCredentials: true, allowInsecureTls: false, saveSent: true, enabled: true, color: '#3b6fd8' };
   const hint = h('div', { class: 'hint-box', hidden: true });
   const result = h('div', { class: 'test-result' });
   const smtpCreds = h('div', { class: 'row2', hidden: v.smtpSameCredentials });
 
+  const isAdmin = state.user && state.user.isAdmin;
+  const managedInfo = h('div', { class: 'info-card managed-info' },
+    h('strong', {}, 'Mailserver wird zentral verwaltet'),
+    h('p', { class: 'muted small' }, 'Die Verbindung zum Mailserver (Adresse, Port, Verschlüsselung) stellt der Administrator ein. Du brauchst nur deine E-Mail-Adresse und dein Passwort.'),
+    isAdmin && a && a.imapHost ? h('p', { class: 'small' },
+      `IMAP ${a.imapHost}:${a.imapPort} (${a.imapSecurity}) · SMTP ${a.smtpHost}:${a.smtpPort} (${a.smtpSecurity}) · Login ${a.imapUser} – `,
+      h('a', { href: '#/admin/domains' }, 'Domains verwalten')) : null);
+  // Neues Konto bei erlaubten eigenen Servern: wählbar
+  const ownServer = isNew && state.customServers ? h('label', { class: 'check own-server' }, h('input', {
+    type: 'checkbox', name: 'ownServer',
+    onChange: (e) => { managed = !e.target.checked; applyManaged(); },
+  }), ' Eigenen Mailserver eintragen (z. B. Gmail, GMX) – sonst wird der zentral eingestellte Server verwendet') : null;
+  if (isNew && state.customServers) managed = true;
+
   const form = h('form', { class: 'form-grid account-form', autocomplete: 'off' },
     isNew ? h('div', { class: 'section-head' }, h('a', { href: '#/settings/accounts', class: 'icon-btn', title: 'Zurück' }, icon('back')), h('h2', {}, 'Neues E-Mail-Konto')) : null,
     h('div', { class: 'row2' },
-      field('E-Mail-Adresse', h('input', { name: 'email', type: 'email', value: v.email, required: true, autocomplete: 'off' })),
+      field('E-Mail-Adresse', h('input', { name: 'email', type: 'email', value: v.email, required: true, autocomplete: 'off', readonly: !isNew && !!v.managed, title: !isNew && v.managed ? 'Die Adresse eines zentral verwalteten Kontos ist fest' : '' })),
       field('Kontoname', h('input', { name: 'name', value: v.name, placeholder: 'z. B. Privat, Arbeit' }))),
     isNew ? field('Dein Name (Absender)', h('input', { name: 'senderName', value: state.user.displayName || '' })) : null,
     h('div', { class: 'row2' },
       field(isNew ? 'Passwort' : 'Passwort (leer = unverändert)', h('input', { name: 'imapPass', type: 'password', autocomplete: 'new-password' })),
       field('Farbe', h('input', { name: 'color', type: 'color', value: v.color }))),
     hint,
-    h('fieldset', {}, h('legend', {}, 'Posteingang (IMAP)'),
+    managedInfo,
+    ownServer,
+    h('fieldset', { class: 'srv' }, h('legend', {}, 'Posteingang (IMAP)'),
       h('div', { class: 'row3' },
         field('Server', h('input', { name: 'imapHost', value: v.imapHost, required: true })),
         field('Port', h('input', { name: 'imapPort', type: 'number', value: v.imapPort, min: 1, max: 65535 })),
         field('Verschlüsselung', secSelect('imapSecurity', v.imapSecurity))),
       field('Benutzername', h('input', { name: 'imapUser', value: v.imapUser, placeholder: 'meist die E-Mail-Adresse' }))),
-    h('fieldset', {}, h('legend', {}, 'Postausgang (SMTP)'),
+    h('fieldset', { class: 'srv' }, h('legend', {}, 'Postausgang (SMTP)'),
       h('div', { class: 'row3' },
         field('Server', h('input', { name: 'smtpHost', value: v.smtpHost, required: true })),
         field('Port', h('input', { name: 'smtpPort', type: 'number', value: v.smtpPort, min: 1, max: 65535 })),
@@ -141,7 +159,7 @@ function accountForm(c, a, append = false) {
     h('fieldset', {}, h('legend', {}, 'Optionen'),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'saveSent', checked: v.saveSent }), ' Gesendete Nachrichten im Ordner „Gesendet“ ablegen'),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'enabled', checked: v.enabled }), ' Konto aktiv (synchronisieren)'),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'allowInsecureTls', checked: v.allowInsecureTls }), ' Ungültige/selbstsignierte Zertifikate akzeptieren')),
+      h('label', { class: 'check srv' }, h('input', { type: 'checkbox', name: 'allowInsecureTls', checked: v.allowInsecureTls }), ' Ungültige/selbstsignierte Zertifikate akzeptieren')),
     result,
     h('div', { class: 'form-actions' },
       !isNew ? h('button', { class: 'btn btn-danger', type: 'button', onClick: async () => {
@@ -151,6 +169,15 @@ function accountForm(c, a, append = false) {
       h('span', { class: 'grow' }),
       h('button', { class: 'btn', type: 'button', onClick: () => test() }, 'Verbindung testen'),
       h('button', { class: 'btn btn-primary', type: 'submit' }, isNew ? 'Hinzufügen' : 'Speichern')));
+
+  // Serverfelder bei verwalteten Konten ausblenden (und nicht mitschicken)
+  function applyManaged() {
+    managedInfo.hidden = !managed;
+    for (const el of form.querySelectorAll('.srv')) {
+      el.hidden = managed;
+      for (const i of el.querySelectorAll('input, select')) i.disabled = managed;
+    }
+  }
 
   smtpCreds.append(
     field('SMTP-Benutzer', h('input', { name: 'smtpUser', value: v.smtpUser })),
@@ -174,9 +201,11 @@ function accountForm(c, a, append = false) {
   }
 
   const set = (name, value) => { const el = form.querySelector(`[name="${name}"]`); if (el) { if (el.type === 'checkbox') el.checked = value; else el.value = value; } };
+  applyManaged();
   if (isNew) {
     const email = form.querySelector('[name=email]');
     email.addEventListener('change', () => {
+      if (managed) return; // zentral verwaltet: keine Vorschläge für Server
       const p = presetFor(email.value);
       if (!p) return;
       set('imapHost', p.imapHost); set('imapPort', p.imapPort); set('imapSecurity', p.imapSecurity);
@@ -191,6 +220,10 @@ function accountForm(c, a, append = false) {
 
   const payload = () => {
     const d = formValues(form);
+    if (managed) {
+      for (const k of ['imapHost', 'imapPort', 'imapSecurity', 'imapUser', 'smtpHost', 'smtpPort', 'smtpSecurity', 'smtpUser', 'smtpPass', 'smtpSameCredentials', 'allowInsecureTls']) delete d[k];
+    }
+    delete d.ownServer;
     if (a) d.id = a.id;
     return d;
   };
@@ -199,8 +232,8 @@ function accountForm(c, a, append = false) {
     try {
       const r = await post('/accounts/test', payload());
       clear(result,
-        h('div', { class: r.imap.ok ? 'ok-text' : 'error-text' }, r.imap.ok ? `✓ IMAP verbunden (${r.imap.folders} Ordner)` : `✗ IMAP: ${r.imap.error}`),
-        h('div', { class: r.smtp.ok ? 'ok-text' : 'error-text' }, r.smtp.ok ? '✓ SMTP verbunden' : `✗ SMTP: ${r.smtp.error}`));
+        h('div', { class: r.imap.ok ? 'ok-text' : 'error-text' }, r.imap.ok ? `✓ Posteingang verbunden (${r.imap.folders} Ordner)` : `✗ Posteingang: ${r.imap.error}`),
+        h('div', { class: r.smtp.ok ? 'ok-text' : 'error-text' }, r.smtp.ok ? '✓ Postausgang verbunden' : `✗ Postausgang: ${r.smtp.error}`));
     } catch (err) {
       clear(result, h('div', { class: 'error-text' }, err.message));
     }

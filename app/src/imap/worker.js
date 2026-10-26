@@ -89,7 +89,13 @@ class AccountWorker {
     await db.query(
       `UPDATE mail_accounts SET status = $2, last_error = $3, last_sync = CASE WHEN $2 = 'ok' THEN now() ELSE last_sync END
         WHERE id = $1`, [this.id, status, error || null]).catch(() => {});
-    hub.send(this.userId, { t: 'account', accountId: this.id, status, error: error || null });
+    // Verwaltete Konten: Endbenutzer sehen keine Serveradresse/Ports in Fehlermeldungen
+    let shown = error || null;
+    if (shown && this.account.domain_id) {
+      for (const h of [this.account.imap_host, this.account.smtp_host].filter(Boolean)) shown = shown.split(h).join('Mailserver');
+      shown = shown.replace(/(Mailserver):\d{2,5}/g, '$1').replace(/\b(Port|port) \d{2,5}\b/g, '$1');
+    }
+    hub.send(this.userId, { t: 'account', accountId: this.id, status, error: shown });
   }
 
   // ------------------------------------------------------------------ Connections

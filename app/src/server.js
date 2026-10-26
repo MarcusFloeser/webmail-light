@@ -12,13 +12,16 @@ const mailRoutes = require('./mail/routes');
 const davRoutes = require('./dav/routes');
 
 async function main() {
-  if (config.authMode === 'imap' && !config.authImap.host) {
-    console.error('[config] AUTH_MODE=imap braucht AUTH_IMAP_HOST');
-    process.exit(1);
-  }
   await db.waitForDb();
   await db.migrate();
   await auth.ensureAdmin();
+  // Mailserver-Konfiguration pro Domain: beim ersten Start aus .env übernehmen, Konten zuordnen
+  const domains = require('./domains');
+  await domains.migrateFromEnv();
+  await domains.assignExisting({ restart: false });
+  if (config.authMode === 'imap' && !(await domains.list()).length) {
+    console.warn('[config] AUTH_MODE=imap, aber kein Mailserver eingerichtet – bitte als Admin unter „Benutzer → Domains“ eine Domain anlegen (oder AUTH_IMAP_HOST setzen).');
+  }
 
   const app = express();
   app.disable('x-powered-by');
@@ -54,6 +57,7 @@ async function main() {
   app.use('/api', require('./password').router());
   app.use('/api', auth.requireAuth, mailRoutes.router());
   app.use('/api', auth.requireAuth, davRoutes.router());
+  app.use('/api', auth.requireAuth, require('./admin-domains').router());
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unbekannter Endpunkt' }));
 
   // Oberfläche: versioniert unter /v/<kennung>/ (dauerhaft cachebar), index.html immer frisch

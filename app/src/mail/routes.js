@@ -11,6 +11,7 @@ const message = require('./message');
 const compose = require('./compose');
 const davService = require('../dav/service');
 const ics = require('../dav/ics');
+const domains = require('../domains');
 
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
 
@@ -22,15 +23,32 @@ function httpError(status, msg) {
   return e;
 }
 
-function publicAccount(a) {
-  return {
+/**
+ * Konto für die Oberfläche. Verwaltete Konten (Server aus der Domain-Konfiguration) zeigen
+ * Endbenutzern keine Serverdaten (Adresse, Port, Verschlüsselung) – nur Admins sehen sie.
+ */
+function publicAccount(a, isAdmin = false) {
+  const managed = !!a.domain_id;
+  const base = {
     id: a.id, name: a.name, email: a.email, color: a.color, enabled: a.enabled, sortOrder: a.sort_order,
+    saveSent: a.save_sent, managed,
+    status: a.status, lastError: a.last_error, lastSync: a.last_sync,
+  };
+  if (managed && !isAdmin) return { ...base, lastError: a.last_error ? hideServer(a.last_error, a) : a.last_error };
+  return {
+    ...base,
     imapHost: a.imap_host, imapPort: a.imap_port, imapSecurity: a.imap_security, imapUser: a.imap_user,
     smtpHost: a.smtp_host, smtpPort: a.smtp_port, smtpSecurity: a.smtp_security, smtpUser: a.smtp_user,
     smtpSameCredentials: !a.smtp_user && !a.smtp_pass,
-    allowInsecureTls: a.allow_insecure_tls, saveSent: a.save_sent,
-    status: a.status, lastError: a.last_error, lastSync: a.last_sync,
+    allowInsecureTls: a.allow_insecure_tls,
   };
+}
+
+/** Serveradresse/Port aus Fehlermeldungen für Endbenutzer entfernen. */
+function hideServer(msg, a) {
+  let m = String(msg);
+  for (const h of [a.imap_host, a.smtp_host].filter(Boolean)) m = m.split(h).join('Mailserver');
+  return m.replace(/(Mailserver):\d{2,5}/g, '$1').replace(/\b(Port|port) \d{2,5}\b/g, '$1');
 }
 
 function publicIdentity(i) {
@@ -62,8 +80,16 @@ async function ownFolder(id, userId) {
   return f;
 }
 
-/** Normalisiert + validiert Kontodaten aus dem Formular. */
-function accountInput(b, existing) {
+/**
+ * Normalisiert + validiert Kontodaten aus dem Formular.
+ * Mit `domain`: verwaltetes Konto – Serverdaten kommen aus der Domain, Eingaben dazu werden ignoriert.
+ */
+function accountInput(b, existing, domain) {
+  if (domain) {
+    const email = String(b.email ?? existing?.email ?? '').trim();
+    b = { ...b, ...camelServer(domains.accountFields(domain)),
+      imapUser: existing?.imap_user || domains.loginFor(domain, email), smtpSameCredentials: true };
+  }
   const v = {
     name: String(b.name ?? existing?.name ?? '').trim(),
     email: String(b.email ?? existing?.email ?? '').trim(),
@@ -97,6 +123,35 @@ function accountInput(b, existing) {
   return v;
 }
 
+function camelServer(f) {
+  return {
+    imapHost: f.imap_host, imapPort: f.imap_port, imapSecurity: f.imap_security,
+    smtpHost: f.smtp_host, smtpPort: f.smtp_port, smtpSecurity: f.smtp_security, allowInsecureTls: f.allow_insecure_tls,
+  };
+}
+
+/**
+ * Welche Domain-Konfiguration gilt für ein neues Konto?
+ *  - ausdrücklich eingerichtete Domain → immer verwaltet
+ *  - Standard "*" → verwaltet, ausser eigene Server sind erlaubt und es wurden Serverdaten angegeben
+ *  - keine Domain → eigener Server nur, wenn erlaubt (oder Admin)
+ */
+async function domainForNewAccount(b, user) {
+  const email = String(b.email || '').trim();
+  const d = await domains.findForEmail(email);
+  const custom = user.is_admin || (await domains.customServersAllowed());
+  if (d && d.domain !== domains.DEFAULT) return d;
+  if (d && !(custom && b.imapHost)) return d;
+  if (!d && !custom) {
+    throw httpError(400, `Für die Domain ${domains.domainOf(email) || '?'} ist kein Mailserver eingerichtet – bitte an den Administrator wenden.`);
+  }
+  return null;
+}
+
+async function domainOfAccount(a) {
+  return a && a.domain_id ? db.one('SELECT * FROM mail_domains WHERE id = $1', [a.domain_id]) : null;
+}
+
 async function folderCounts(ids) {
   if (!ids.length) return [];
   const rows = await db.many('SELECT id, account_id, total, unseen FROM folders WHERE id = ANY($1::int[])', [ids]);
@@ -118,8 +173,9 @@ function router() {
     const identities = ids.length ? await db.many(
       'SELECT * FROM identities WHERE account_id = ANY($1::int[]) ORDER BY sort_order, id', [ids]) : [];
     res.json({
+      customServers: req.user.is_admin || (await domains.customServersAllowed()),
       accounts: accounts.map((a) => ({
-        ...publicAccount(a),
+        ...publicAccount(a, req.user.is_admin),
         folders: folders.filter((f) => f.account_id === a.id).map(publicFolder),
         identities: identities.filter((i) => i.account_id === a.id).map(publicIdentity),
       })),
@@ -136,34 +192,39 @@ function router() {
   r.post('/accounts/test', wrap(async (req, res) => {
     let existing = null;
     if (req.body.id) existing = await ownAccount(req.body.id, req.user.id);
-    const acc = accountInput(req.body, existing);
+    const d = existing ? await domainOfAccount(existing) : await domainForNewAccount(req.body, req.user);
+    const acc = accountInput(req.body, existing, d);
     const [imap, smtp] = await Promise.all([testImap(acc), compose.testSmtp(acc)]);
+    if (d && !req.user.is_admin) {
+      for (const r2 of [imap, smtp]) if (r2.error) r2.error = hideServer(r2.error, acc);
+    }
     res.json({ imap, smtp });
   }));
 
   r.post('/accounts', wrap(async (req, res) => {
-    const v = accountInput(req.body, null);
+    const d = await domainForNewAccount(req.body, req.user);
+    const v = accountInput(req.body, null, d);
     if (!req.body.skipTest) {
       const imap = await testImap(v);
-      if (!imap.ok) throw httpError(400, `IMAP: ${imap.error}`);
+      if (!imap.ok) throw httpError(400, d && !req.user.is_admin ? `Anmeldung fehlgeschlagen: ${hideServer(imap.error, v)}` : `IMAP: ${imap.error}`);
     }
     const a = await db.tx(async (t) => {
       const ord = await t.query('SELECT coalesce(max(sort_order), 0) + 1 AS n FROM mail_accounts WHERE user_id = $1', [req.user.id]);
       const ins = await t.query(
         `INSERT INTO mail_accounts (user_id, name, email, imap_host, imap_port, imap_security, imap_user, imap_pass,
                                     smtp_host, smtp_port, smtp_security, smtp_user, smtp_pass, allow_insecure_tls,
-                                    save_sent, enabled, color, sort_order)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18) RETURNING *`,
+                                    save_sent, enabled, color, sort_order, domain_id)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING *`,
         [req.user.id, v.name, v.email, v.imap_host, v.imap_port, v.imap_security, v.imap_user, v.imap_pass,
           v.smtp_host, v.smtp_port, v.smtp_security, v.smtp_user, v.smtp_pass, v.allow_insecure_tls,
-          v.save_sent, v.enabled, v.color, ord.rows[0].n]);
+          v.save_sent, v.enabled, v.color, ord.rows[0].n, d ? d.id : null]);
       const acc = ins.rows[0];
       await t.query('INSERT INTO identities (account_id, name, email, is_default) VALUES ($1, $2, $3, true)',
         [acc.id, String(req.body.senderName || req.user.display_name || ''), v.email]);
       return acc;
     });
     if (a.enabled) manager.start(a);
-    res.json({ account: publicAccount(a) });
+    res.json({ account: publicAccount(a, req.user.is_admin) });
   }));
 
   r.patch('/accounts/:id', wrap(async (req, res) => {
@@ -175,7 +236,9 @@ function router() {
         [existing.id, req.body.sortOrder ?? null, req.body.color ?? null, req.body.name ?? null]);
       return res.json({ ok: true });
     }
-    const v = accountInput(req.body, existing);
+    // Verwaltete Konten: Server bleibt der aus der Domain-Konfiguration; die E-Mail-Adresse ist fest
+    const d = await domainOfAccount(existing);
+    const v = accountInput(d ? { ...req.body, email: existing.email } : req.body, existing, d);
     const a = await db.one(
       `UPDATE mail_accounts SET name=$2, email=$3, imap_host=$4, imap_port=$5, imap_security=$6, imap_user=$7, imap_pass=$8,
               smtp_host=$9, smtp_port=$10, smtp_security=$11, smtp_user=$12, smtp_pass=$13, allow_insecure_tls=$14,
@@ -189,7 +252,7 @@ function router() {
       await db.query('DELETE FROM folders WHERE account_id = $1', [a.id]);
     }
     await manager.restart(a.id);
-    res.json({ account: publicAccount(a) });
+    res.json({ account: publicAccount(a, req.user.is_admin) });
   }));
 
   r.delete('/accounts/:id', wrap(async (req, res) => {

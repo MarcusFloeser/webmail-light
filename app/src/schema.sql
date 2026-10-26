@@ -152,3 +152,29 @@ ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_used BIGINT;
 ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_limit BIGINT;
 ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_source TEXT;        -- quota | estimate
 ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_checked_at TIMESTAMPTZ;
+
+-- Zentrale Mailserver-Konfiguration pro Domain ("*" = alle übrigen Domains); nur für Admins
+CREATE TABLE IF NOT EXISTS mail_domains (
+  id                 SERIAL PRIMARY KEY,
+  domain             TEXT NOT NULL UNIQUE,
+  imap_host          TEXT NOT NULL,
+  imap_port          INT  NOT NULL DEFAULT 993,
+  imap_security      TEXT NOT NULL DEFAULT 'ssl',
+  smtp_host          TEXT NOT NULL,
+  smtp_port          INT  NOT NULL DEFAULT 587,
+  smtp_security      TEXT NOT NULL DEFAULT 'starttls',
+  login_format       TEXT NOT NULL DEFAULT 'email',      -- email | local (nur Teil vor dem @)
+  allow_insecure_tls BOOLEAN NOT NULL DEFAULT false,
+  dav_url            TEXT NOT NULL DEFAULT '',
+  note               TEXT NOT NULL DEFAULT '',
+  created_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS domain_id INT REFERENCES mail_domains(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS mail_accounts_domain_idx ON mail_accounts(domain_id);
+
+-- Globale Einstellungen der Anwendung (vom Admin änderbar)
+CREATE TABLE IF NOT EXISTS app_settings (
+  key    TEXT PRIMARY KEY,
+  value  JSONB NOT NULL
+);

@@ -1058,3 +1058,9 @@ body.c-resizing iframe { pointer-events: none; }
 .rte-source[hidden], .rte-area[hidden] { display: none; }
 
 .rte { background: #ffffff; }
+
+/* Domains & Mailserver (Admin) / verwaltete Konten */
+.data-table code { font-family: var(--mono); font-size: 12px; }
+.managed-info { margin: 4px 0 0; }
+.managed-info p { margin: 6px 0 0; }
+.own-server { margin-top: 4px; }
