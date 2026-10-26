@@ -33,7 +33,7 @@
 }
 
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not(.theme-light) {
     --bg: #16181d;
     --panel: #1d2026;
     --panel-2: #23272e;
@@ -59,6 +59,34 @@
     color-scheme: dark;
   }
 }
+/* Farbschema fest auf Dunkel (Einstellungen → Darstellung) */
+:root.theme-dark {
+    --bg: #16181d;
+    --panel: #1d2026;
+    --panel-2: #23272e;
+    --hover: #262a32;
+    --active: #24324f;
+    --border: #2d323b;
+    --border-strong: #3a404b;
+    --text: #e6e8ec;
+    --text-2: #b4bac4;
+    --muted: #8a92a0;
+    --accent: #6b93f0;
+    --accent-hover: #86a6f3;
+    --accent-soft: #24324f;
+    --accent-text: #0e1320;
+    --danger: #ef6b6b;
+    --danger-soft: #3a2224;
+    --ok: #4cc38a;
+    --ok-soft: #1c3329;
+    --warn: #e5b04a;
+    --warn-soft: #3a3020;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, .5);
+    color-scheme: dark;
+  }
+/* Farbschema fest auf Hell */
+:root.theme-light { color-scheme: light; }
 
 /* ===================================================================== Basis */
 * { box-sizing: border-box; }
@@ -717,6 +745,8 @@ body.agenda-view.agenda-open .agenda { display: flex; }
   --panel: rgba(255, 255, 255, .55); --panel-2: rgba(255, 255, 255, .6);
   --text: #1c2027; --text-2: #39404b; --muted: #5b6370;
   --hover: rgba(0, 0, 0, .05); --active: rgba(0, 0, 0, .09); --border: rgba(0, 0, 0, .1); --border-strong: rgba(0, 0, 0, .2);
+  --accent: #2f5fd0; --accent-hover: #244fb5; --accent-soft: rgba(47, 95, 208, .14); --accent-text: #ffffff;
+  --danger: #c43d3d; --ok: #24855a; --warn: #a86a00;
   color: var(--text);
 }
 .bgx-sdark .list-pane,
@@ -751,6 +781,8 @@ body.agenda-view.agenda-open .agenda { display: flex; }
 .bgx-light .reader-empty, .bgx-light .reader-loading, .bgx-light .thread-subject-big {
   --text: #1c2027; --text-2: #343b46; --muted: #59616e;
   --hover: rgba(0, 0, 0, .06); --active: rgba(0, 0, 0, .1); --border: rgba(0, 0, 0, .12);
+  --accent: #2f5fd0; --accent-hover: #244fb5; --accent-soft: rgba(47, 95, 208, .14); --accent-text: #ffffff;
+  --danger: #c43d3d; --ok: #24855a; --warn: #a86a00;
   color: var(--text);
 }
 .bgx-dark .agenda-day.today h3 span { color: #fff; }
@@ -847,3 +879,12 @@ body.no-sidebar .compose.max { left: 24px; }
   .bgx-slight .settings-tabs, .bgx-sdark .settings-tabs { background: var(--bg-solid); }
 }
 .move-search { width: 100%; margin-bottom: 8px; }
+
+/* Eingabeelemente (Kästchen, Felder) passend zur Fläche – unabhängig vom Farbschema */
+.bgx-light .sidebar, .bgx-light .agenda-head,
+.bgx-slight .list-pane, .bgx-slight .contact-col, .bgx-slight .contact-detail-pane, .bgx-slight .cal-side, .bgx-slight .cal-main, .bgx-slight .settings-view { color-scheme: light; }
+.bgx-dark .sidebar, .bgx-dark .agenda-head,
+.bgx-sdark .list-pane, .bgx-sdark .contact-col, .bgx-sdark .contact-detail-pane, .bgx-sdark .cal-side, .bgx-sdark .cal-main, .bgx-sdark .settings-view { color-scheme: dark; }
+.bgx-slight .search-input, .bgx-slight .settings-view input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),
+.bgx-slight .settings-view select, .bgx-slight .settings-view textarea { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .1); }
+.bgx-slight .seg { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }

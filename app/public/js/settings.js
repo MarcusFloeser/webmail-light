@@ -450,7 +450,7 @@ function appearanceSection(c) {
     clearTimeout(saveTimer);
     const run = async () => {
       try {
-        const r = await patch('/me', { settings: { appearance: { color: cfg.color, veil: cfg.veil, image: cfg.image, listGlass: cfg.listGlass } } });
+        const r = await patch('/me', { settings: { appearance: { color: cfg.color, veil: cfg.veil, image: cfg.image, listGlass: cfg.listGlass, theme: cfg.theme } } });
         state.user = r.user;
       } catch (err) { toast(err.message, 'error'); }
     };
@@ -481,6 +481,13 @@ function appearanceSection(c) {
       } catch (err) { toast(err.message, 'error'); }
     },
   });
+
+  const themeSeg = h('div', { class: 'seg', role: 'radiogroup', 'aria-label': 'Farbschema' });
+  const renderTheme = () => clear(themeSeg, ...[['auto', 'Automatisch'], ['light', 'Hell'], ['dark', 'Dunkel']].map(([k, l]) => h('button', {
+    type: 'button', role: 'radio', 'aria-checked': String(cfg.theme === k), class: cfg.theme === k ? 'on' : '',
+    onClick: () => { update({ theme: k }, true); renderTheme(); },
+  }, l)));
+  renderTheme();
 
   const swatchRow = h('div', { class: 'swatches' });
   const colorPick = h('input', {
@@ -541,9 +548,12 @@ function appearanceSection(c) {
   clear(c,
     h('div', { class: 'section-head' }, h('h2', {}, 'Darstellung')),
     preview,
-    h('h3', {}, 'Hintergrundfarbe'),
+    h('h3', {}, 'Farbschema'),
+    themeSeg,
+    h('p', { class: 'muted small' }, '„Automatisch“ folgt der Einstellung deines Geräts (hell oder dunkel). „Hell“ bzw. „Dunkel“ gilt unabhängig davon.'),
+    h('h3', { style: { marginTop: '28px' } }, 'Hintergrundfarbe'),
     swatchRow,
-    h('p', { class: 'muted small' }, 'Die Farbe erscheint hinter Ordnerliste, Lesebereich und Terminspalte. Schrift wird automatisch hell oder dunkel gesetzt. Im dunklen Farbschema des Systems wird die Farbe passend abgedunkelt.'),
+    h('p', { class: 'muted small' }, 'Die Farbe erscheint hinter Ordnerliste, Lesebereich und Terminspalte. Schrift wird automatisch hell oder dunkel gesetzt. Die Farbe wird genau so verwendet, wie du sie wählst – auch im dunklen Farbschema.'),
     h('h3', { style: { marginTop: '28px' } }, 'Hintergrundbild'),
     imgArea,
     h('h3', { style: { marginTop: '28px' } }, 'Mail-Liste, Kontakte, Kalender'),

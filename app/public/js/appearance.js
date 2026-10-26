@@ -11,6 +11,7 @@ let current = null;
 
 export const PRESETS = [
   [null, 'Standard'],
+  ['#ffffff', 'Weiss'],
   ['#e8edf5', 'Nebel'],
   ['#e1ecf7', 'Himmel'],
   ['#e3ece4', 'Salbei'],
@@ -62,6 +63,7 @@ export function normalize(a) {
     image: a.image && a.image.v ? { v: a.image.v, lum: Number.isFinite(Number(a.image.lum)) ? Number(a.image.lum) : 0.5 } : null,
     veil,
     listGlass: a.listGlass !== false,
+    theme: ['light', 'dark'].includes(a.theme) ? a.theme : 'auto',
   };
 }
 
@@ -69,7 +71,11 @@ export function normalize(a) {
 export function apply(appearance) {
   current = normalize(appearance);
   const root = document.documentElement;
-  const dark = !!(darkQuery && darkQuery.matches);
+  // Farbschema: automatisch (System) oder fest hell/dunkel
+  root.classList.toggle('theme-light', current.theme === 'light');
+  root.classList.toggle('theme-dark', current.theme === 'dark');
+  const dark = current.theme === 'dark' || (current.theme === 'auto' && !!(darkQuery && darkQuery.matches));
+  updateThemeColor(dark);
   const { color, image, veil } = current;
   const custom = !!(color || image);
   root.classList.toggle('bgx', custom);
@@ -81,7 +87,6 @@ export function apply(appearance) {
   }
   // Grundfarbe; im dunklen Farbschema wird eine helle Wahl stark abgedunkelt
   let base = hexToRgb(color || (dark ? DEFAULT_DARK : DEFAULT_LIGHT));
-  if (dark && color) base = mix(hexToRgb(DEFAULT_DARK), base, luminance(base) > 0.3 ? 0.22 : 0.65);
 
   let solid = base;
   if (image) {
@@ -98,7 +103,7 @@ export function apply(appearance) {
   root.style.setProperty('--bg-solid', rgbToHex(solid));
   // Mail-Liste, Kontakte, Kalender: in der gewählten Farbe (leicht zur Flächenfarbe hin aufgehellt
   // bzw. abgedunkelt, damit sie sich von der Ordnerleiste abheben); mit Bild halbtransparent
-  const panelRgb = dark ? [29, 32, 38] : [255, 255, 255];
+  const panelRgb = luminance(base) > 0.3 ? [255, 255, 255] : [29, 32, 38];
   const surface = mix(base, panelRgb, color ? 0.1 : 0.5);
   let surfaceSeen = surface;
   if (image) {
@@ -115,6 +120,13 @@ export function apply(appearance) {
   const darkBg = prefersWhite(luminance(solid), !!image);
   root.classList.toggle('bgx-dark', darkBg);
   root.classList.toggle('bgx-light', !darkBg);
+}
+
+function updateThemeColor(dark) {
+  for (const m of document.querySelectorAll('meta[name="theme-color"]')) {
+    if (current.theme === 'auto') m.setAttribute('content', /dark/.test(m.getAttribute('media') || '') ? DEFAULT_DARK : DEFAULT_LIGHT);
+    else m.setAttribute('content', dark ? DEFAULT_DARK : DEFAULT_LIGHT);
+  }
 }
 
 export function applyFromUser(user) {
