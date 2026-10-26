@@ -9,6 +9,7 @@ const { authenticate } = require('./imap-auth');
 const password = require('./password');
 
 const COOKIE = 'wm_sid';
+const BACKGROUND_MAX = 4 * 1048576; // Hintergrundbild: max. 4 MB
 const USERNAME_RE = /^[a-z0-9][a-z0-9._-]{1,62}$/;
 
 // ---------------------------------------------------------------------------
@@ -26,14 +27,17 @@ function parseCookies(header) {
   return out;
 }
 
+/**
+ * maxAgeSec: Zahl → dauerhaftes Cookie, null → Sitzungs-Cookie (endet mit dem Browser).
+ */
 function setSessionCookie(res, sid, maxAgeSec) {
   const parts = [
     `${COOKIE}=${sid}`,
     'Path=/',
     'HttpOnly',
     'SameSite=Lax',
-    `Max-Age=${maxAgeSec}`,
   ];
+  if (maxAgeSec !== null && maxAgeSec !== undefined) parts.push(`Max-Age=${maxAgeSec}`);
   if (config.cookieSecure) parts.push('Secure');
   res.setHeader('Set-Cookie', parts.join('; '));
 }
@@ -45,18 +49,32 @@ function publicUser(u) {
   };
 }
 
-async function userFromRequest(req) {
+/** Gültigkeit einer Sitzung in Sekunden: „angemeldet bleiben" vs. nur diese Browser-Sitzung. */
+function sessionLifetimeSec(persistent) {
+  return persistent ? config.sessionDays * 86400 : config.sessionIdleHours * 3600;
+}
+
+/**
+ * Sitzung aus dem Cookie lesen. Ablauf ist gleitend: bei Aktivität wird die Sitzung verlängert
+ * (höchstens alle paar Minuten ein Schreibzugriff). Mit `res` wird bei dauerhaften Sitzungen
+ * auch das Cookie erneuert, damit es bei regelmässiger Nutzung nie abläuft.
+ */
+async function userFromRequest(req, res) {
   const sid = parseCookies(req.headers.cookie)[COOKIE];
   if (!sid || sid.length !== 64) return null;
   const row = await db.one(
-    `SELECT u.*, s.expires_at AS s_expires FROM sessions s JOIN users u ON u.id = s.user_id
+    `SELECT u.*, s.expires_at AS s_expires, s.persistent AS s_persistent
+     FROM sessions s JOIN users u ON u.id = s.user_id
      WHERE s.id = $1 AND s.expires_at > now()`, [sid]);
   if (!row) return null;
-  // Sliding expiration (höchstens einmal pro Tag schreiben)
+  const lifetime = sessionLifetimeSec(row.s_persistent);
   const remaining = new Date(row.s_expires).getTime() - Date.now();
-  if (remaining < (config.sessionDays - 1) * 86400000) {
-    db.query(`UPDATE sessions SET expires_at = now() + ($2 || ' days')::interval WHERE id = $1`,
-      [sid, String(config.sessionDays)]).catch(() => {});
+  // dauerhaft: höchstens 1× pro Tag verlängern, sonst höchstens alle 5 Minuten
+  const slack = row.s_persistent ? 86400000 : 300000;
+  if (remaining < lifetime * 1000 - slack) {
+    db.query(`UPDATE sessions SET expires_at = now() + ($2 || ' seconds')::interval WHERE id = $1`,
+      [sid, String(lifetime)]).catch(() => {});
+    if (res && row.s_persistent && !res.headersSent) setSessionCookie(res, sid, lifetime);
   }
   row.sid = sid;
   return row;
@@ -86,7 +104,7 @@ setInterval(() => {
 
 async function requireAuth(req, res, next) {
   try {
-    const user = await userFromRequest(req);
+    const user = await userFromRequest(req, res);
     if (!user) return res.status(401).json({ error: 'Nicht angemeldet' });
     req.user = user;
     next();
@@ -196,12 +214,16 @@ function router({ onUserDeleted }) {
       }
       failures.delete(key);
       const sid = randomToken(32);
+      // „Angemeldet bleiben": dauerhaftes Cookie (SESSION_DAYS), sonst Sitzungs-Cookie,
+      // das beim Schliessen des Browsers verfällt (serverseitig zusätzlich SESSION_IDLE_HOURS)
+      const persistent = req.body.remember === true || req.body.remember === 'true';
+      const lifetime = sessionLifetimeSec(persistent);
       await db.query(
-        `INSERT INTO sessions (id, user_id, expires_at, user_agent)
-         VALUES ($1, $2, now() + ($3 || ' days')::interval, $4)`,
-        [sid, user.id, String(config.sessionDays), String(req.get('user-agent') || '').slice(0, 300)]);
+        `INSERT INTO sessions (id, user_id, expires_at, user_agent, persistent)
+         VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4, $5)`,
+        [sid, user.id, String(lifetime), String(req.get('user-agent') || '').slice(0, 300), persistent]);
       db.query('DELETE FROM sessions WHERE expires_at < now()').catch(() => {});
-      setSessionCookie(res, sid, config.sessionDays * 86400);
+      setSessionCookie(res, sid, persistent ? lifetime : null);
       res.json({ user: publicUser(user) });
     } catch (err) { next(err); }
   });
@@ -260,6 +282,53 @@ function router({ onUserDeleted }) {
       await db.query('DELETE FROM sessions WHERE user_id = $1 AND id <> $2', [req.user.id, req.user.sid]);
       clearBasicCacheFor(req.user.username);
       res.json({ ok: true });
+    } catch (err) { next(err); }
+  });
+
+  // ---------------- Hintergrundbild ----------------
+  r.get('/me/background', requireAuth, async (req, res, next) => {
+    try {
+      const row = await db.one('SELECT mime, data FROM user_backgrounds WHERE user_id = $1', [req.user.id]);
+      if (!row) return res.status(404).end();
+      res.setHeader('Content-Type', row.mime);
+      // Die URL enthält eine Versionsnummer (?v=…), daher lange cachebar
+      res.setHeader('Cache-Control', 'private, max-age=31536000, immutable');
+      res.setHeader('X-Content-Type-Options', 'nosniff');
+      res.setHeader('Content-Security-Policy', "default-src 'none'; sandbox");
+      res.end(Buffer.from(row.data, 'base64'));
+    } catch (err) { next(err); }
+  });
+
+  r.put('/me/background', requireAuth, async (req, res, next) => {
+    try {
+      const m = String(req.body.dataUrl || '').match(/^data:(image\/(?:jpeg|png|webp));base64,([A-Za-z0-9+/=]+)$/);
+      if (!m) return res.status(400).json({ error: 'Bitte ein Bild im Format JPEG, PNG oder WebP wählen' });
+      const buf = Buffer.from(m[2], 'base64');
+      if (buf.length > BACKGROUND_MAX) return res.status(413).json({ error: `Bild zu groß (max. ${Math.round(BACKGROUND_MAX / 1048576)} MB)` });
+      const sig = buf.subarray(0, 12);
+      const isImage = (sig[0] === 0xff && sig[1] === 0xd8 && sig[2] === 0xff)
+        || sig.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))
+        || (sig.subarray(0, 4).toString('latin1') === 'RIFF' && sig.subarray(8, 12).toString('latin1') === 'WEBP');
+      if (!isImage) return res.status(400).json({ error: 'Die Datei ist kein gültiges Bild' });
+      await db.query(
+        `INSERT INTO user_backgrounds (user_id, mime, data, updated_at) VALUES ($1, $2, $3, now())
+         ON CONFLICT (user_id) DO UPDATE SET mime = EXCLUDED.mime, data = EXCLUDED.data, updated_at = now()`,
+        [req.user.id, m[1], m[2]]);
+      const lum = Math.min(1, Math.max(0, Number(req.body.luminance)));
+      const appearance = { ...((req.user.settings || {}).appearance || {}), image: { v: Date.now(), lum: Number.isFinite(lum) ? lum : 0.5 } };
+      const u = await db.one('UPDATE users SET settings = $2 WHERE id = $1 RETURNING *',
+        [req.user.id, { ...(req.user.settings || {}), appearance }]);
+      res.json({ user: publicUser(u) });
+    } catch (err) { next(err); }
+  });
+
+  r.delete('/me/background', requireAuth, async (req, res, next) => {
+    try {
+      await db.query('DELETE FROM user_backgrounds WHERE user_id = $1', [req.user.id]);
+      const appearance = { ...((req.user.settings || {}).appearance || {}), image: null };
+      const u = await db.one('UPDATE users SET settings = $2 WHERE id = $1 RETURNING *',
+        [req.user.id, { ...(req.user.settings || {}), appearance }]);
+      res.json({ user: publicUser(u) });
     } catch (err) { next(err); }
   });
 

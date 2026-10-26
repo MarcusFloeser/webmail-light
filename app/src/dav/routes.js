@@ -215,13 +215,24 @@ function router() {
   }));
 
   // ------------------------------------------------------------ Kontaktfotos
-  /** E-Mail-Adressen, zu denen ein Kontaktfoto existiert (für Avatare in der Mail-Ansicht). */
+  /**
+   * E-Mail-Adressen aus den Adressbüchern: `emails` = mit Kontaktfoto (Avatare),
+   * `known` = alle Kontaktadressen (z. B. Bilder in Mails dieser Absender automatisch anzeigen).
+   */
   r.get('/contact-photos', wrap(async (req, res) => {
     const contacts = await svc.allContacts(req.user);
     const emails = new Set();
-    for (const c of contacts) if (c.photo) for (const e of c.emails) emails.add(e.value.toLowerCase());
+    const known = new Set();
+    for (const c of contacts) {
+      for (const e of c.emails || []) {
+        const v = String(e.value || '').trim().toLowerCase();
+        if (!v) continue;
+        known.add(v);
+        if (c.photo) emails.add(v);
+      }
+    }
     res.setHeader('Cache-Control', 'private, no-cache');
-    res.json({ emails: [...emails] });
+    res.json({ emails: [...emails], known: [...known] });
   }));
 
   /** Foto ausliefern: ?email=… (Mail-Ansicht) oder ?sourceId=…&url=… (Kontaktliste) */

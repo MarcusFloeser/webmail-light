@@ -56,13 +56,34 @@ async function main() {
   app.use('/api', auth.requireAuth, davRoutes.router());
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unbekannter Endpunkt' }));
 
-  app.use(express.static(path.join(__dirname, '..', 'public'), {
-    index: 'index.html',
-    setHeaders: (res, file) => {
-      if (file.endsWith('.html')) res.setHeader('Cache-Control', 'no-cache');
+  // Oberfläche: versioniert unter /v/<kennung>/ (dauerhaft cachebar), index.html immer frisch
+  const assets = require('./assets');
+  const build = assets.buildId();
+  const indexHtml = assets.versionedIndex(build);
+  console.log(`[http] Oberfläche Version ${build}`);
+  const sendIndex = (req, res) => {
+    res.setHeader('Cache-Control', 'no-cache');
+    res.type('html').send(indexHtml);
+  };
+  app.get(['/', '/index.html'], sendIndex);
+  app.use('/v/:ver', (req, res, next) => {
+    res.locals.currentBuild = req.params.ver === build;
+    next();
+  }, express.static(assets.PUBLIC, {
+    index: false,
+    setHeaders: (res) => {
+      // Aktuelle Version: dauerhaft cachen; veraltete Kennung (alte Seite noch offen): nicht cachen
+      res.setHeader('Cache-Control', res.locals.currentBuild ? 'public, max-age=31536000, immutable' : 'no-cache');
     },
   }));
-  app.get('*', (req, res) => res.sendFile(path.join(__dirname, '..', 'public', 'index.html')));
+  app.use(express.static(assets.PUBLIC, {
+    index: false,
+    setHeaders: (res, file) => {
+      // Unversionierte Pfade (z. B. Favicon): beim Server nachfragen (ETag)
+      if (/\.(html|js|css)$/.test(file)) res.setHeader('Cache-Control', 'no-cache');
+    },
+  }));
+  app.get('*', sendIndex);
 
   // Fehlerbehandlung
   // eslint-disable-next-line no-unused-vars

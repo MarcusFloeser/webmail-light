@@ -18,6 +18,7 @@ CREATE TABLE IF NOT EXISTS sessions (
   user_agent  TEXT
 );
 CREATE INDEX IF NOT EXISTS sessions_user_idx ON sessions(user_id);
+ALTER TABLE sessions ADD COLUMN IF NOT EXISTS persistent BOOLEAN NOT NULL DEFAULT true;
 
 CREATE TABLE IF NOT EXISTS mail_accounts (
   id                 SERIAL PRIMARY KEY,
@@ -134,4 +135,12 @@ CREATE TABLE IF NOT EXISTS password_resets (
   used_at     TIMESTAMPTZ,
   created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
   ip          TEXT
+);
+
+-- Eigenes Hintergrundbild pro Benutzer (Base64, max. ~4 MB)
+CREATE TABLE IF NOT EXISTS user_backgrounds (
+  user_id     INT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  mime        TEXT NOT NULL,
+  data        TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );

@@ -23,6 +23,7 @@ module.exports = {
   syncInitialMessages: parseInt(env.SYNC_INITIAL_MESSAGES, 10) || 1000,
   pollIntervalMs: (parseInt(env.POLL_INTERVAL_SECONDS, 10) || 120) * 1000,
   sessionDays: parseInt(env.SESSION_DAYS, 10) || 30,
+  sessionIdleHours: parseInt(env.SESSION_IDLE_HOURS, 10) || 12,
   // Anmeldung: 'local' (eigene Passwörter) oder 'imap' (Zugangsdaten des Mailservers)
   authMode: (env.AUTH_MODE || 'local').toLowerCase() === 'imap' ? 'imap' : 'local',
   authImap: {

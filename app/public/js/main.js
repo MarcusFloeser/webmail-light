@@ -1,6 +1,6 @@
 import { h, clear, icon, iconButton, toast, avatar } from './ui.js';
 import { get, post, onEvent, connectPush, disconnectPush } from './api.js';
-import { state, subscribe, loadAccounts, loadContactPhotos, findFolder, folderLabel, SPECIAL_ICONS } from './state.js';
+import { state, subscribe, loadAccounts, loadContactPhotos, refreshFolderCounts, findFolder, folderLabel, SPECIAL_ICONS } from './state.js';
 import * as mail from './mail.js';
 import * as compose from './compose.js';
 import * as calendar from './calendar.js';
@@ -8,11 +8,24 @@ import * as contacts from './contacts.js';
 import * as settings from './settings.js';
 import * as admin from './admin.js';
 import * as reminders from './reminders.js';
+import * as agenda from './agenda.js';
+import * as appearance from './appearance.js';
+import * as splitters from './splitters.js';
 
 const $ = (sel) => document.querySelector(sel);
 let currentView = null;
+let pushConnected = false;
 
 // ====================================================================== Login
+
+// Letzter Benutzername und Wahl „Angemeldet bleiben" (nur Komfort, kein Passwort)
+const LOGIN_PREFS = 'wm.loginPrefs';
+function loadLoginPrefs() {
+  try { return JSON.parse(localStorage.getItem(LOGIN_PREFS)) || {}; } catch { return {}; }
+}
+function saveLoginPrefs(p) {
+  try { localStorage.setItem(LOGIN_PREFS, JSON.stringify(p)); } catch { /* egal */ }
+}
 
 function renderLogin() {
   $('#shell').hidden = true;
@@ -20,7 +33,9 @@ function renderLogin() {
   root.hidden = false;
   let mode = 'login';
   const err = h('p', { class: 'form-error', role: 'alert' });
-  const user = h('input', { name: 'username', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: 'false' });
+  const prefs = loadLoginPrefs();
+  const user = h('input', { name: 'username', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: 'false', value: prefs.username || '' });
+  const remember = h('input', { type: 'checkbox', name: 'remember', checked: prefs.remember !== false });
   const pass = h('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true });
   const display = h('input', { name: 'displayName', autocomplete: 'name' });
   const displayField = h('label', { class: 'field', hidden: true }, h('span', {}, 'Anzeigename'), display);
@@ -45,7 +60,8 @@ function renderLogin() {
           await post('/register', { username: user.value, password: pass.value, displayName: display.value });
           toast('Konto erstellt – du kannst dich jetzt anmelden', 'success');
         }
-        const r = await post('/login', { username: user.value, password: pass.value });
+        const r = await post('/login', { username: user.value, password: pass.value, remember: remember.checked });
+        saveLoginPrefs({ username: user.value.trim(), remember: remember.checked });
         state.user = r.user;
         resetFolderState();
         await startApp();
@@ -63,12 +79,14 @@ function renderLogin() {
   state.config.authMode === 'imap' ? h('p', { class: 'muted small login-hint' }, 'Melde dich mit den Zugangsdaten deines E-Mail-Postfachs an.') : null,
   displayField,
   h('label', { class: 'field' }, h('span', {}, 'Passwort'), pass),
+  h('label', { class: 'check remember-check', title: 'Auf gemeinsam genutzten Geräten nicht aktivieren' },
+    remember, ' Angemeldet bleiben'),
   err, submit, switcher,
   state.config.passwordReset ? h('button', {
     type: 'button', class: 'link-btn forgot-link', onClick: () => renderForgot(user.value),
   }, 'Passwort vergessen?') : null);
   clear(root, form);
-  setTimeout(() => user.focus(), 50);
+  setTimeout(() => (user.value ? pass : user).focus(), 50);
 }
 
 function loginShell() {
@@ -374,6 +392,9 @@ async function route() {
   if (currentView && currentView !== mod && currentView.unmount) currentView.unmount();
   if (currentView !== mod) clear(main);
   currentView = mod;
+  agenda.setActive(mod === mail);
+  // Kalender und Kontakte brauchen die Ordnerliste nicht – mehr Platz für den Inhalt
+  document.body.classList.toggle('no-sidebar', mod === calendar || mod === contacts);
   renderSidebar();
   try {
     await mod.render(main, r);
@@ -394,11 +415,15 @@ function handlePush(msg) {
   if (msg.t === 'unauthorized') {
     disconnectPush();
     reminders.stop();
+    document.body.classList.remove('no-sidebar');
+    agenda.reset();
+    appearance.reset();
     state.user = null;
     renderLogin();
     return;
   }
   if (msg.t === 'connected' || msg.t === 'disconnected') {
+    pushConnected = msg.t === 'connected';
     $('#conn').classList.toggle('offline', msg.t === 'disconnected');
     $('#conn').title = msg.t === 'connected' ? 'Live-Verbindung aktiv' : 'Keine Live-Verbindung – versuche neu zu verbinden';
     if (msg.t === 'connected') scheduleAccountsReload();
@@ -444,8 +469,11 @@ async function startApp() {
   $('#login').hidden = true;
   $('#shell').hidden = false;
   await loadAccounts();
+  appearance.applyFromUser(state.user);
   connectPush();
   reminders.start();
+  agenda.init();
+  splitters.init();
   loadContactPhotos();
   route();
 }
@@ -454,6 +482,9 @@ async function logout() {
   await post('/logout').catch(() => {});
   disconnectPush();
   reminders.stop();
+  agenda.reset();
+  appearance.reset();
+  document.body.classList.remove('no-sidebar');
   resetFolderState();
   state.user = null;
   state.accounts = [];
@@ -467,7 +498,15 @@ function bindGlobal() {
   $('#btn-compose').addEventListener('click', () => compose.openCompose({}));
   $('#btn-menu').addEventListener('click', () => document.body.classList.toggle('sidebar-open'));
   $('#sidebar-backdrop').addEventListener('click', () => document.body.classList.remove('sidebar-open'));
-  subscribe((what) => { if (what === 'accounts' && state.user) renderSidebar(); });
+  subscribe((what) => {
+    if (!state.user) return;
+    if (what === 'accounts') renderSidebar();
+    else if (what === 'counts') { renderFolderTree(); mail.onCountsChanged(); }
+    else if (what === 'contacts') mail.onContactsChanged();
+  });
+  // Ohne Live-Verbindung (z. B. Proxy reicht WebSockets nicht durch) Zähler regelmässig abfragen
+  setInterval(() => { if (state.user && !pushConnected) refreshFolderCounts(); }, 20000);
+  window.addEventListener('focus', () => { if (state.user) refreshFolderCounts(); });
   onEvent(handlePush);
   document.addEventListener('keydown', (e) => {
     if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
@@ -481,13 +520,32 @@ async function boot() {
   try { state.config = await get('/config'); } catch { state.config = {}; }
   const resetToken = resetTokenFromHash();
   if (resetToken) { renderReset(resetToken); return; }
+  let me;
   try {
-    const r = await get('/me');
-    state.user = r.user;
-    await startApp();
-  } catch {
-    renderLogin();
+    me = await get('/me');
+  } catch (ex) {
+    // Nur bei „nicht angemeldet" zur Anmeldung – sonst (Server startet gerade neu,
+    // Netzwerk weg) erneut versuchen statt eine gültige Sitzung zu verwerfen
+    if (ex.status === 401 || ex.status === 403) { renderLogin(); return; }
+    showBootRetry(ex.message);
+    return;
   }
+  state.user = me.user;
+  try {
+    await startApp();
+  } catch (ex) {
+    if (ex.status === 401) { state.user = null; renderLogin(); return; }
+    toast(`Fehler beim Laden: ${ex.message}`, 'error');
+  }
+}
+
+function showBootRetry(message) {
+  const root = loginShell();
+  clear(root, h('div', { class: 'login-card' },
+    h('div', { class: 'login-brand' }, icon('mail', 28), h('span', {}, 'Webmail')),
+    h('p', { class: 'help-text' }, `Server nicht erreichbar (${message}). Neuer Versuch in wenigen Sekunden …`),
+    h('button', { class: 'btn btn-block', type: 'button', onClick: () => location.reload() }, 'Jetzt erneut versuchen')));
+  setTimeout(() => location.reload(), 5000);
 }
 
 boot();

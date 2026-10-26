@@ -3,8 +3,9 @@ import {
   fileSize, formatAddress, avatar, debounce, esc,
 } from './ui.js';
 import { get, post, patch, del } from './api.js';
-import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS } from './state.js';
+import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts } from './state.js';
 import * as compose from './compose.js';
+import { printMessages } from './print.js';
 
 const PAGE = 50;
 
@@ -275,6 +276,8 @@ function renderBulk() {
     iconButton('star', 'Markieren', async () => { await action(ids(), 'flag'); done(); }),
     iconButton('archive', 'Archivieren', async () => { await action(ids(), 'archive'); done(); }),
     iconButton('move', 'Verschieben', () => moveDialog(ids(), done)),
+    iconButton('print', 'Drucken', () => printGroups(cur.threads.filter((t) => cur.selected.has(t.threadId)).map((t) => t.messageIds),
+      n > 1 ? `${n} Konversationen` : undefined)),
     iconButton('trash', 'Löschen', async () => { await action(ids(), 'delete'); done(); }),
     h('button', { class: 'link-btn', type: 'button', onClick: () => { cur.selected.clear(); renderThreads(); } }, 'Aufheben'));
 }
@@ -299,7 +302,8 @@ async function action(ids, act, target, opts = {}) {
     renderThreads();
   }
   try {
-    await post('/messages/actions', { ids, action: act, target });
+    const res = await post('/messages/actions', { ids, action: act, target });
+    applyFolderCounts(res.folders);
     if (act === 'delete') toast('Gelöscht');
     else if (act === 'archive') toast('Archiviert');
     else if (act === 'move') toast('Verschoben');
@@ -340,20 +344,69 @@ function currentThreadIdsInFolder() {
   return cur.thread ? cur.thread.messages.filter((m) => m.folderId === cur.folderId).map((m) => m.id) : [];
 }
 
+const SPECIAL_ORDER = ['\\Inbox', '\\Drafts', '\\Sent', '\\Archive', '\\Junk', '\\Trash', '\\Flagged', '\\Important', '\\All'];
+
+/** Ordner sortiert für Auswahllisten: Standardordner zuerst, dann alphabetisch nach Pfad (Unterordner unter dem Hauptordner). */
+function sortedFolders(folders) {
+  const segs = (f) => {
+    // Pfad in Teile zerlegen (Trennzeichen aus parentPath ableiten), Standardordner mit deutschem Namen
+    const parts = [];
+    let x = f;
+    const byPath = new Map(folders.map((y) => [y.path, y]));
+    while (x) {
+      parts.unshift(folderLabel(x));
+      x = x.parentPath ? byPath.get(x.parentPath) : null;
+    }
+    return parts;
+  };
+  const coll = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
+  return folders.map((f) => {
+    const parts = segs(f);
+    const special = SPECIAL_ORDER.indexOf(f.specialUse);
+    return { f, parts, rank: special >= 0 && parts.length === 1 ? special : SPECIAL_ORDER.length };
+  }).sort((a, b) => {
+    if (a.rank !== b.rank) return a.rank - b.rank;
+    const n = Math.min(a.parts.length, b.parts.length);
+    for (let i = 0; i < n; i++) {
+      const c = coll.compare(a.parts[i], b.parts[i]);
+      if (c) return c;
+    }
+    return a.parts.length - b.parts.length;
+  });
+}
+
 export function moveDialog(ids, after) {
   const list = h('div', { class: 'move-list' });
+  const search = h('input', { type: 'search', class: 'move-search', placeholder: 'Ordner suchen …', 'aria-label': 'Ordner suchen' });
   let m;
-  for (const a of state.accounts) {
-    list.appendChild(h('div', { class: 'move-acc' }, h('span', { class: 'acc-dot', style: { background: a.color } }), a.name));
-    for (const f of a.folders.filter((x) => x.selectable && x.id !== cur.folderId)
-      .sort((x, y) => folderLabel(x).localeCompare(folderLabel(y), 'de'))) {
-      list.appendChild(h('button', {
-        type: 'button', class: 'move-item',
-        onClick: async () => { m.close(); await action(ids, 'move', f.id); if (after) after(); },
-      }, icon(SPECIAL_ICONS[f.specialUse] || 'folder', 16), h('span', {}, f.parentPath ? `${f.path}` : folderLabel(f))));
+  const render = () => {
+    const q = search.value.trim().toLowerCase();
+    clear(list);
+    let shown = 0;
+    for (const a of state.accounts) {
+      const items = sortedFolders(a.folders.filter((x) => x.selectable))
+        .filter(({ f, parts }) => f.id !== cur.folderId && (!q || parts.join(' / ').toLowerCase().includes(q)));
+      if (!items.length) continue;
+      if (state.accounts.length > 1) list.appendChild(h('div', { class: 'move-acc' }, h('span', { class: 'acc-dot', style: { background: a.color } }), a.name));
+      for (const { f, parts } of items) {
+        shown++;
+        list.appendChild(h('button', {
+          type: 'button', class: 'move-item', title: parts.join(' / '),
+          style: q ? {} : { paddingLeft: `${12 + (parts.length - 1) * 18}px` },
+          onClick: async () => { m.close(); await action(ids, 'move', f.id); if (after) after(); },
+        }, icon(SPECIAL_ICONS[f.specialUse] || 'folder', 16),
+        h('span', {}, q ? parts.join(' / ') : parts[parts.length - 1])));
+      }
     }
-  }
-  m = modal({ title: 'Verschieben nach…', body: list });
+    if (!shown) list.appendChild(h('p', { class: 'muted pad' }, 'Kein passender Ordner.'));
+  };
+  search.addEventListener('input', render);
+  search.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { const first = list.querySelector('.move-item'); if (first) first.click(); }
+  });
+  render();
+  m = modal({ title: 'Verschieben nach…', body: h('div', { class: 'move-dialog' }, search, list) });
+  setTimeout(() => search.focus(), 50);
 }
 
 export function makeDropTarget(el, folder) {
@@ -408,7 +461,7 @@ export function popupMenu(e, items) {
 
 export function folderMenu(folder, account, e) {
   popupMenu(e, [
-    { label: 'Alle als gelesen markieren', onClick: async () => { try { await post(`/folders/${folder.id}/read-all`); if (folder.id === cur.folderId) loadThreads(true); } catch (err) { toast(err.message, 'error'); } } },
+    { label: 'Alle als gelesen markieren', onClick: async () => { try { const rr = await post(`/folders/${folder.id}/read-all`); applyFolderCounts(rr.folders); if (folder.id === cur.folderId) loadThreads(true); } catch (err) { toast(err.message, 'error'); } } },
     { label: 'Jetzt synchronisieren', onClick: () => post(`/folders/${folder.id}/sync`).then(() => toast('Synchronisierung gestartet')).catch((err) => toast(err.message, 'error')) },
     { label: 'Unterordner anlegen…', onClick: () => createFolderDialog(account, folder) },
     !folder.specialUse ? { label: 'Umbenennen…', onClick: async () => {
@@ -502,6 +555,7 @@ function renderThread() {
       class: `icon-btn star ${flagged ? 'on' : ''}`, type: 'button', title: flagged ? 'Markierung entfernen' : 'Markieren (s)',
       onClick: () => action(currentThreadIdsInFolder(), flagged ? 'unflag' : 'flag').then(() => renderThread()),
     }, icon('star')),
+    iconButton('print', t.messages.length > 1 ? `Konversation drucken (${t.messages.length} Nachrichten)` : 'Drucken', () => printCurrentThread()),
     iconButton('more', 'Weitere Aktionen', (e) => popupMenu(e, [
       special === '\\Junk'
         ? { label: 'Kein Spam', onClick: () => action(currentThreadIdsInFolder(), 'notspam') }
@@ -555,6 +609,7 @@ function messageCard(m, isLast) {
       { label: 'Weiterleiten', onClick: () => replyTo(m, 'forward') },
       m.folderSpecial === '\\Drafts' ? { label: 'Entwurf bearbeiten', onClick: () => editDraft(m) } : null,
       { label: 'Als ungelesen markieren', onClick: () => action([m.id], 'unseen') },
+      { label: 'Nur diese Nachricht drucken', onClick: () => printGroups([[m.id]]) },
       { label: 'Diese Nachricht löschen', danger: true, onClick: () => action([m.id], 'delete', null, { keepList: true }).then(() => openThread(cur.threadId, { soft: true })) },
       { label: 'Quelltext anzeigen', onClick: () => window.open(`/api/messages/${m.id}/source`, '_blank', 'noopener') },
     ]), { class: 'tiny' }) : null));
@@ -586,6 +641,7 @@ async function loadBody(m) {
   if (!payload) {
     try {
       payload = await get(`/messages/${m.id}/body`);
+      applyFolderCounts(payload.folders);
       bodyCache.set(m.id, payload);
       if (bodyCache.size > 60) bodyCache.delete(bodyCache.keys().next().value);
       if (!m.flags.includes('\\Seen')) m.flags = [...m.flags, '\\Seen'];
@@ -602,11 +658,42 @@ function trustedSenders() {
   try { return new Set(JSON.parse(localStorage.getItem('wm.trusted') || '[]')); } catch { return new Set(); }
 }
 
+/** Dürfen externe Bilder dieser Nachricht geladen werden? (ohne einmalige Freigabe) */
+function remoteAllowedFor(p) {
+  const sender = (p.from && p.from[0] && p.from[0].address || '').toLowerCase();
+  return trustedSenders().has(sender) || (imagesFromContacts() && isContact(sender));
+}
+
+/** Konversationen drucken: groups = [[messageId, …], …] */
+function printGroups(groups, title) {
+  return printMessages(groups, { getBody: (id) => bodyCache.get(id), allowRemote: remoteAllowedFor, title });
+}
+
+function printCurrentThread() {
+  if (!cur.thread) return;
+  printGroups([cur.thread.messages.map((m) => m.id)]);
+}
+
+// Nachrichten mit blockierten Bildern – werden neu gezeichnet, falls die Kontakte später nachladen
+const blockedBodies = new Set();
+
+/** Kontaktliste hat sich geändert: Bilder bei Mails von (neuen) Kontakten nachträglich laden. */
+export function onContactsChanged() {
+  for (const b of [...blockedBodies]) {
+    if (!b.container.isConnected) { blockedBodies.delete(b); continue; }
+    if (imagesFromContacts() && isContact(b.sender)) fillBody(b.container, b.m, b.p);
+  }
+}
+
 function fillBody(container, m, p, forceRemote = false) {
   clear(container);
+  for (const b of blockedBodies) if (b.container === container) blockedBodies.delete(b);
   const sender = (p.from[0] && p.from[0].address || '').toLowerCase();
-  const allowRemote = forceRemote || trustedSenders().has(sender);
+  // Externe Bilder: einmalig erlaubt, Absender immer erlaubt, oder Absender ist ein Kontakt
+  const fromContact = imagesFromContacts() && isContact(sender);
+  const allowRemote = forceRemote || trustedSenders().has(sender) || fromContact;
 
+  if (p.hasRemote && !allowRemote) blockedBodies.add({ container, m, p, sender });
   if (p.hasRemote && !allowRemote) {
     container.appendChild(h('div', { class: 'banner' },
       icon('image', 16),
@@ -747,6 +834,13 @@ async function editDraft(m) {
 const reloadList = debounce(() => { if (root) loadThreads(true); }, 400);
 const reloadThread = debounce(() => { if (root && cur.threadId) openThread(cur.threadId, { soft: true }); }, 600);
 
+/** Seitenleisten-Zähler haben sich geändert -> Kopf der Liste aktualisieren */
+export function onCountsChanged() {
+  if (!root || !els.count) return;
+  const f = findFolder(cur.folderId);
+  if (f) els.count.textContent = f.folder.unseen ? `${f.folder.unseen} ungelesen` : '';
+}
+
 export function onFolderEvent(msg) {
   if (!root) return;
   if (msg.folderId === cur.folderId) {
@@ -760,6 +854,18 @@ export function onFolderEvent(msg) {
 
 function onKey(e) {
   if (!root) return;
+  // Strg/Cmd+P: geöffnete Konversation bzw. Auswahl sauber drucken statt der ganzen Oberfläche
+  if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p'
+    && !document.querySelector('.modal-overlay, .compose.open:not(.minimized)')) {
+    if (cur.selected.size) {
+      e.preventDefault();
+      printGroups(cur.threads.filter((t) => cur.selected.has(t.threadId)).map((t) => t.messageIds));
+    } else if (cur.thread) {
+      e.preventDefault();
+      printCurrentThread();
+    }
+    return;
+  }
   if (e.target.closest('input, textarea, select, [contenteditable="true"]')) return;
   if (e.ctrlKey || e.metaKey || e.altKey) return;
   if (document.querySelector('.modal-overlay, .compose.open:not(.minimized)')) return;

@@ -8,6 +8,7 @@ export const state = {
   user: null,
   accounts: [],
   config: {},
+  contactEmails: new Set(), // alle Adressen aus den Adressbüchern (kleingeschrieben)
 };
 
 export function subscribe(fn) {
@@ -87,7 +88,41 @@ export function folderLabel(f) {
   return SPECIAL_NAMES[f.specialUse] || f.name;
 }
 
-/** Adressen mit Kontaktfoto laden (für Avatare in der Mail-Ansicht). */
+/** Kontaktadressen laden: mit Foto (Avatare) und alle bekannten (Bilder automatisch anzeigen). */
 export function loadContactPhotos(bust = false) {
-  return get('/contact-photos').then((r) => setPhotoEmails(r.emails, { bust })).catch(() => {});
+  return get('/contact-photos').then((r) => {
+    setPhotoEmails(r.emails, { bust });
+    state.contactEmails = new Set(r.known || []);
+    notify('contacts');
+  }).catch(() => {});
+}
+
+/** Ist die Adresse ein Kontakt im Adressbuch? */
+export function isContact(address) {
+  return !!address && state.contactEmails.has(String(address).trim().toLowerCase());
+}
+
+/** Externe Bilder bei Mails von Kontakten automatisch laden? (Profil-Einstellung, Standard: ja) */
+export function imagesFromContacts() {
+  return !state.user || !state.user.settings || state.user.settings.imagesFromContacts !== false;
+}
+
+/** Ordnerzähler (ungelesen/gesamt) übernehmen und Seitenleiste neu zeichnen. */
+export function applyFolderCounts(list) {
+  if (!Array.isArray(list) || !list.length) return;
+  let changed = false;
+  for (const c of list) {
+    const f = findFolder(c.id);
+    if (!f) continue;
+    if (f.folder.unseen !== c.unseen || f.folder.total !== c.total) {
+      f.folder.unseen = c.unseen;
+      f.folder.total = c.total;
+      changed = true;
+    }
+  }
+  if (changed) notify('counts');
+}
+
+export function refreshFolderCounts() {
+  return get('/folder-counts').then((r) => applyFolderCounts(r.folders)).catch(() => {});
 }

@@ -172,7 +172,8 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .acc + .acc { margin-top: 10px; }
 .acc-head { display: flex; align-items: center; gap: 2px; }
 .acc-head .icon-btn { opacity: 0; transition: opacity .1s; }
-.acc-head:hover .icon-btn, .acc-head .icon-btn:focus-visible { opacity: 1; }
+.acc-head:hover .icon-btn { opacity: 1; }
+.acc-head .icon-btn:focus-visible { opacity: 1; }
 .acc-toggle { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; border: 0; background: none; padding: 5px 4px; cursor: pointer; text-align: left; border-radius: var(--radius-sm); font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
 .acc-toggle:hover { color: var(--text); }
 .chev { display: inline-flex; transition: transform .12s; }
@@ -221,7 +222,7 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .thread.selected { background: var(--accent-soft); }
 .thread.unread::before { content: ""; position: absolute; left: 3px; top: 50%; width: 6px; height: 6px; margin-top: -3px; border-radius: 50%; background: var(--accent); }
 .thread-left { position: relative; width: 34px; height: 34px; flex: none; }
-.thread-left .sel { position: absolute; inset: 0; width: 34px; height: 34px; opacity: 0; cursor: pointer; }
+.thread-left .sel { position: absolute; top: 0; right: 0; bottom: 0; left: 0; width: 34px; height: 34px; opacity: 0; cursor: pointer; }
 .thread:hover .thread-left .avatar, .thread.selected .thread-left .avatar { opacity: 0; }
 .thread:hover .thread-left .sel, .thread.selected .thread-left .sel { opacity: 1; width: 18px; height: 18px; margin: 8px; }
 .thread-main { flex: 1; min-width: 0; }
@@ -282,7 +283,7 @@ a.att:hover { border-color: var(--accent); text-decoration: none; }
 .popup-menu button { text-align: left; border: 0; background: none; padding: 8px 12px; border-radius: 5px; cursor: pointer; }
 .popup-menu button:hover { background: var(--hover); }
 .popup-menu button.danger { color: var(--danger); }
-.modal-overlay { position: fixed; inset: 0; background: rgba(10, 14, 22, .45); z-index: 50; display: grid; place-items: center; padding: 16px; animation: fade .12s; }
+.modal-overlay { position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(10, 14, 22, .45); z-index: 50; display: grid; place-items: center; padding: 16px; animation: fade .12s; }
 @keyframes fade { from { opacity: 0; } }
 .modal { background: var(--panel); border-radius: 14px; box-shadow: var(--shadow-lg); width: 100%; max-width: 440px; max-height: calc(100dvh - 32px); display: flex; flex-direction: column; }
 .modal-wide { max-width: 640px; }
@@ -327,7 +328,7 @@ legend { font-weight: 600; padding: 0 6px; font-size: 13px; color: var(--text-2)
 /* ===================================================================== Verfassen */
 #compose-root { position: fixed; right: 20px; bottom: 0; z-index: 40; }
 .compose { width: 600px; max-width: calc(100vw - 24px); height: min(640px, calc(100dvh - 40px)); background: var(--panel); border: 1px solid var(--border); border-bottom: 0; border-radius: 12px 12px 0 0; box-shadow: var(--shadow-lg); display: flex; flex-direction: column; animation: rise .15s; }
-.compose.max { position: fixed; inset: 24px 24px 0 calc(var(--sidebar-w) + 24px); width: auto; height: auto; max-width: none; }
+.compose.max { position: fixed; top: 24px; right: 24px; bottom: 0; left: calc(var(--sidebar-w) + 24px); width: auto; height: auto; max-width: none; }
 .compose.minimized { height: auto; }
 .compose.minimized .c-body, .compose.minimized .c-foot { display: none; }
 .compose.closing { opacity: 0; transform: translateY(10px); transition: .15s; }
@@ -361,7 +362,7 @@ legend { font-weight: 600; padding: 0 6px; font-size: 13px; color: var(--text-2)
 
 /* ===================================================================== Kalender / Kontakte */
 .cal-view, .contacts-view { display: flex; height: 100%; min-height: 0; }
-.cal-side { width: 240px; flex: none; padding: 14px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 12px; overflow-y: auto; background: var(--panel); }
+.cal-side { width: var(--calside-w, 240px); flex: none; padding: 14px; border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 12px; overflow-y: auto; background: var(--panel); }
 .side-title { display: flex; align-items: center; gap: 2px; font-size: 12px; text-transform: uppercase; font-weight: 600; color: var(--muted); letter-spacing: .04em; margin-top: 6px; }
 .side-title span { flex: 1; }
 .cal-src-name { font-size: 12px; color: var(--muted); margin: 6px 0 2px; }
@@ -413,7 +414,7 @@ legend { font-weight: 600; padding: 0 6px; font-size: 13px; color: var(--text-2)
 .book:hover { background: var(--hover); }
 .book.active { background: var(--active); color: var(--accent); }
 .book-name { font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.contact-col { width: 330px; flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel); min-height: 0; }
+.contact-col { width: var(--contact-w, 330px); flex: none; display: flex; flex-direction: column; border-right: 1px solid var(--border); background: var(--panel); min-height: 0; }
 .contact-search { display: flex; gap: 6px; align-items: center; padding: 12px; border-bottom: 1px solid var(--border); }
 .contact-search .search-wrap { flex: 1; }
 .contact-list { list-style: none; margin: 0; padding: 0 0 20px; }
@@ -471,7 +472,7 @@ a.acc-card:hover { border-color: var(--accent); text-decoration: none; }
 @media (max-width: 900px) {
   .sidebar { position: fixed; left: 0; top: 0; bottom: 0; z-index: 30; transform: translateX(-100%); transition: transform .2s; box-shadow: var(--shadow-lg); background: var(--panel); }
   body.sidebar-open .sidebar { transform: none; }
-  .sidebar-backdrop { display: none; position: fixed; inset: 0; background: rgba(0, 0, 0, .35); z-index: 25; }
+  .sidebar-backdrop { display: none; position: fixed; top: 0; right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, .35); z-index: 25; }
   body.sidebar-open .sidebar-backdrop { display: block; }
 
 
@@ -493,7 +494,7 @@ a.acc-card:hover { border-color: var(--accent); text-decoration: none; }
   .cal-week { grid-template-columns: 1fr; }
   .week-day { border-right: 0; border-bottom: 1px solid var(--border); }
   #compose-root { right: 0; left: 0; }
-  .compose, .compose.max { position: fixed; inset: 0; width: 100%; max-width: none; height: 100%; border-radius: 0; }
+  .compose, .compose.max { position: fixed; top: 0; right: 0; bottom: 0; left: 0; width: 100%; max-width: none; height: 100%; border-radius: 0; }
   .c-head { border-radius: 0; }
   .settings-content { padding: 16px; }
   .settings-tabs { padding: 8px 12px 0; }
@@ -521,6 +522,7 @@ a.acc-card:hover { border-color: var(--accent); text-decoration: none; }
 .adr-city { display: grid; grid-template-columns: 110px 1fr; gap: 6px; }
 
 .login-hint { margin: -6px 0 0; }
+.remember-check { font-size: 14px; margin-top: -2px; }
 
 /* Datum/Zeit-Eingabe (deutsch, 24 h) */
 .date-field { position: relative; display: flex; align-items: center; min-width: 0; flex: 1; }
@@ -570,7 +572,7 @@ input.invalid { border-color: var(--danger) !important; box-shadow: 0 0 0 3px va
 .shell-body .main { flex: 1; min-width: 0; }
 .sidebar { padding-top: 14px; }
 .folder-tree { border-top: 0; padding-top: 4px; margin-top: 4px; }
-.compose.max { inset: calc(var(--appbar-h) + 16px) 24px 0 calc(var(--sidebar-w) + 24px); }
+.compose.max { top: calc(var(--appbar-h) + 16px); right: 24px; bottom: 0; left: calc(var(--sidebar-w) + 24px); }
 
 /* Mittlere Breite: nur Icons in der Leiste */
 @media (max-width: 1250px) {
@@ -612,3 +614,236 @@ img.avatar { object-fit: cover; display: inline-block; flex: none; border-radius
 .photo-preview { width: 84px; height: 84px; border-radius: 50%; overflow: hidden; background: var(--panel-2); display: grid; place-items: center; color: var(--muted); flex: none; border: 1px solid var(--border); }
 .photo-preview img { width: 100%; height: 100%; object-fit: cover; }
 .photo-actions { display: grid; gap: 6px; justify-items: start; }
+
+/* ===================================================================== Terminspalte (rechts) */
+.appbar-agenda { margin-left: auto; width: 38px; height: 38px; }
+.appbar-agenda[hidden] { display: none; }
+.appbar-agenda:not([hidden]) + .appbar-user { margin-left: 0; }
+.appbar-agenda.active { color: var(--accent); background: var(--accent-soft); }
+
+.agenda {
+  display: none; width: var(--agenda-w, 288px); flex: none; flex-direction: column; min-height: 0;
+  background: var(--bg); border-left: 1px solid var(--border);
+}
+body.agenda-view.agenda-open .agenda { display: flex; }
+.agenda-head { display: flex; align-items: center; gap: 2px; padding: 12px 8px 10px 16px; border-bottom: 1px solid var(--border); }
+.agenda-title { flex: 1; display: grid; line-height: 1.25; min-width: 0; }
+.agenda-title strong { font-size: 14px; }
+.agenda-title small { font-size: 12px; color: var(--muted); }
+.agenda.loading .agenda-head .icon-btn:first-of-type .icon { animation: spin .8s linear infinite; }
+.agenda-list { flex: 1; overflow-y: auto; padding: 6px 10px 16px; }
+.agenda-day { margin-top: 10px; }
+.agenda-day h3 {
+  display: flex; align-items: baseline; gap: 6px; margin: 0 0 4px; padding: 0 6px;
+  font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: .04em; color: var(--muted);
+}
+.agenda-day h3 small { font-weight: 500; text-transform: none; letter-spacing: 0; }
+.agenda-day.today h3 span { color: var(--accent); }
+.agenda-ev {
+  display: grid; gap: 1px; width: 100%; text-align: left; cursor: pointer;
+  border: 0; background: var(--panel); color: var(--text); font: inherit;
+  border-radius: var(--radius-sm); padding: 7px 10px 7px 12px; margin-bottom: 4px;
+  box-shadow: inset 3px 0 0 var(--ev-color, var(--accent)), var(--shadow);
+}
+.agenda-ev:hover { background: var(--hover); }
+.agenda-ev:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.agenda-time { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.agenda-now { font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .04em; color: var(--ok); background: var(--ok-soft); padding: 0 5px; border-radius: 4px; }
+.agenda-ev.running { box-shadow: inset 3px 0 0 var(--ev-color, var(--accent)), 0 0 0 1px var(--ok-soft), var(--shadow); }
+.agenda-ev-title { font-size: 13.5px; font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agenda-loc { font-size: 12px; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.agenda-empty { display: grid; justify-items: center; gap: 6px; text-align: center; color: var(--muted); padding: 40px 12px; }
+.agenda-empty .icon { color: var(--border-strong); }
+.agenda-empty p { margin: 0; }
+.agenda-error { margin: 8px 4px 0; font-size: 12px; color: var(--danger); }
+.agenda-backdrop { display: none; }
+
+/* Schmale Bildschirme: Spalte schiebt sich über den Inhalt */
+@media (max-width: 1199px) {
+  .agenda {
+    position: fixed; right: 0; top: var(--appbar-h); bottom: 0; z-index: 28;
+    width: min(320px, 88vw); background: var(--panel); box-shadow: var(--shadow-lg);
+  }
+  body.agenda-view.agenda-open .agenda-backdrop { display: block; position: fixed; top: var(--appbar-h); right: 0; bottom: 0; left: 0; background: rgba(0, 0, 0, .25); z-index: 27; }
+  .agenda-ev { background: var(--panel-2); box-shadow: inset 3px 0 0 var(--ev-color, var(--accent)); }
+}
+
+/* Drucken über das Browser-Menü (Strg+P wird in der Mail-Ansicht abgefangen und nutzt eine eigene Druckansicht) */
+@media print {
+  .appbar, .sidebar, .sidebar-backdrop, .list-pane, .agenda, .agenda-backdrop, .reader-toolbar, .toast-root, #compose-root { display: none !important; }
+  .shell, .shell-body, .main, .reader-pane, .reader-scroll { display: block !important; height: auto !important; overflow: visible !important; }
+}
+
+/* ===================================================================== Eigener Hintergrund (Farbe/Bild) */
+.bgx-image .shell { background: var(--bg-solid) var(--bg-image) center / cover no-repeat; }
+.bgx-image body, .bgx-image .shell-body { background: transparent; }
+.bgx .sidebar, .bgx .agenda { border-color: transparent; }
+.bgx-image .sidebar, .bgx-image .reader-pane, .bgx-image .agenda { background: var(--bg); }
+/* Mail-Liste, Kontakte, Kalender in der gewählten Farbe (abschaltbar) */
+.bgx-slight .list-pane,
+.bgx-slight .contact-col,
+.bgx-slight .contact-detail-pane,
+.bgx-slight .cal-side,
+.bgx-slight .cal-main,
+.bgx-slight .settings-view,
+.bgx-sdark .list-pane,
+.bgx-sdark .contact-col,
+.bgx-sdark .contact-detail-pane,
+.bgx-sdark .cal-side,
+.bgx-sdark .cal-main,
+.bgx-sdark .settings-view {
+  background: var(--surface); border-right-color: transparent;
+}
+.bgx-image.bgx-slight .list-pane,
+.bgx-image.bgx-slight .contact-col,
+.bgx-image.bgx-slight .contact-detail-pane,
+.bgx-image.bgx-slight .cal-side,
+.bgx-image.bgx-slight .cal-main,
+.bgx-image.bgx-slight .settings-view,
+.bgx-image.bgx-sdark .list-pane,
+.bgx-image.bgx-sdark .contact-col,
+.bgx-image.bgx-sdark .contact-detail-pane,
+.bgx-image.bgx-sdark .cal-side,
+.bgx-image.bgx-sdark .cal-main,
+.bgx-image.bgx-sdark .settings-view {
+  -webkit-backdrop-filter: blur(14px) saturate(1.15); backdrop-filter: blur(14px) saturate(1.15);
+}
+.bgx-slight .list-pane,
+.bgx-slight .contact-col,
+.bgx-slight .contact-detail-pane,
+.bgx-slight .cal-side,
+.bgx-slight .cal-main,
+.bgx-slight .settings-view {
+  --panel: rgba(255, 255, 255, .55); --panel-2: rgba(255, 255, 255, .6);
+  --text: #1c2027; --text-2: #39404b; --muted: #5b6370;
+  --hover: rgba(0, 0, 0, .05); --active: rgba(0, 0, 0, .09); --border: rgba(0, 0, 0, .1); --border-strong: rgba(0, 0, 0, .2);
+  color: var(--text);
+}
+.bgx-sdark .list-pane,
+.bgx-sdark .contact-col,
+.bgx-sdark .contact-detail-pane,
+.bgx-sdark .cal-side,
+.bgx-sdark .cal-main,
+.bgx-sdark .settings-view {
+  --panel: rgba(255, 255, 255, .07); --panel-2: rgba(255, 255, 255, .12);
+  --text: #f4f6f9; --text-2: rgba(255, 255, 255, .86); --muted: rgba(255, 255, 255, .66);
+  --hover: rgba(255, 255, 255, .08); --active: rgba(255, 255, 255, .16); --border: rgba(255, 255, 255, .14); --border-strong: rgba(255, 255, 255, .28);
+  --danger: #ffc2c2; --ok: #9fe3bf; --warn: #ffd98a;
+  --accent: #ffffff; --accent-hover: #e8ecf3; --accent-text: #1c2027; --accent-soft: rgba(255, 255, 255, .18);
+  color: var(--text);
+}
+.bgx-slight .search-input:focus, .bgx-sdark .search-input:focus { background: var(--panel-2) !important; }
+/* Bereiche, in denen Text direkt auf dem Hintergrund stünde, bekommen eine Fläche */
+.bgx:not(.bgx-slight):not(.bgx-sdark) .settings-view,
+.bgx:not(.bgx-slight):not(.bgx-sdark) .contact-detail-pane { background: var(--panel); }
+.bgx .cal-cell.out { background: var(--panel-2); }
+
+/* Schrift auf dem Hintergrund automatisch hell bzw. dunkel */
+.bgx-dark .sidebar, .bgx-dark .agenda-head, .bgx-dark .agenda-day h3, .bgx-dark .agenda-empty,
+.bgx-dark .reader-empty, .bgx-dark .reader-loading, .bgx-dark .thread-subject-big {
+  --text: #f4f6f9; --text-2: rgba(255, 255, 255, .86); --muted: rgba(255, 255, 255, .7);
+  --hover: rgba(255, 255, 255, .12); --active: rgba(255, 255, 255, .22); --border: rgba(255, 255, 255, .18);
+  --accent: #ffffff; --accent-hover: #e8ecf3; --accent-text: #1c2027; --accent-soft: rgba(255, 255, 255, .2);
+  --danger: #ffc2c2; --panel-2: rgba(255, 255, 255, .2);
+  color: var(--text);
+}
+.bgx-light .sidebar, .bgx-light .agenda-head, .bgx-light .agenda-day h3, .bgx-light .agenda-empty,
+.bgx-light .reader-empty, .bgx-light .reader-loading, .bgx-light .thread-subject-big {
+  --text: #1c2027; --text-2: #343b46; --muted: #59616e;
+  --hover: rgba(0, 0, 0, .06); --active: rgba(0, 0, 0, .1); --border: rgba(0, 0, 0, .12);
+  color: var(--text);
+}
+.bgx-dark .agenda-day.today h3 span { color: #fff; }
+.bgx-light .sidebar { --panel-2: rgba(0, 0, 0, .08); }
+.bgx-image .sidebar .acc-error { text-shadow: none; padding: 3px 6px; border-radius: 4px; background: rgba(255, 236, 236, .94); color: #a51c1c; }
+.bgx-dark .agenda-empty .icon { color: rgba(255, 255, 255, .5); }
+.bgx-light .agenda-empty .icon { color: rgba(0, 0, 0, .3); }
+/* Lesbarkeit von Schrift direkt auf einem Bild */
+.bgx-image.bgx-dark .sidebar .folder-name, .bgx-image.bgx-dark .acc-toggle, .bgx-image.bgx-dark .acc-name, .bgx-image.bgx-dark .agenda-day h3,
+.bgx-image.bgx-dark .thread-subject-big { text-shadow: 0 1px 2px rgba(0, 0, 0, .35); }
+.bgx-image.bgx-light .sidebar .folder-name, .bgx-image.bgx-light .acc-toggle, .bgx-image.bgx-light .acc-name,
+.bgx-image.bgx-light .agenda-day h3, .bgx-image.bgx-light .agenda-title, .bgx-image.bgx-light .thread-subject-big,
+.bgx-image.bgx-light .sidebar .icon { text-shadow: 0 0 3px rgba(255, 255, 255, .9), 0 0 8px rgba(255, 255, 255, .6); }
+.bgx-image.bgx-dark .agenda-title, .bgx-image.bgx-dark .acc-name { text-shadow: 0 1px 2px rgba(0, 0, 0, .45); }
+/* Ausklappbare Leisten auf schmalen Bildschirmen: deckend */
+@media (max-width: 900px) { .bgx .sidebar { background: var(--bg-solid); } }
+@media (max-width: 1199px) { .bgx .agenda { background: var(--bg-solid); } }
+
+/* Einstellungen → Darstellung */
+.appear-preview {
+  height: 150px; border-radius: var(--radius); border: 1px solid var(--border); overflow: hidden; position: relative;
+  display: grid; grid-template-columns: 30% 1fr; gap: 10px; padding: 10px; margin-bottom: 22px;
+  background: var(--bg-solid, var(--bg)) var(--bg-image, none) center / cover no-repeat;
+}
+.appear-preview .pv-side { border-radius: 6px; background: var(--bg); padding: 10px; display: grid; align-content: start; gap: 7px; }
+.appear-preview .pv-line { height: 8px; border-radius: 4px; background: rgba(0, 0, 0, .3); }
+.bgx-dark .appear-preview .pv-side .pv-line { background: rgba(255, 255, 255, .75); }
+.appear-preview .pv-side .pv-line.accent { background: var(--accent); width: 80%; height: 14px; border-radius: 6px; }
+.bgx-dark .appear-preview .pv-side .pv-line.accent { background: #fff; }
+.appear-preview .pv-line.short { width: 60%; }
+.appear-preview .pv-panel { border-radius: 6px; background: var(--panel); box-shadow: var(--shadow); padding: 12px; display: grid; align-content: start; gap: 8px; }
+.appear-preview .pv-panel .pv-line { background: var(--border-strong); }
+.swatches { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+.swatch {
+  width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--border-strong); cursor: pointer; padding: 0;
+  display: grid; place-items: center; position: relative; color: #1c2027;
+}
+.swatch.default { background: linear-gradient(135deg, #f6f7f9 50%, #16181d 50%); }
+.swatch.on { outline: 3px solid var(--accent); outline-offset: 2px; }
+.swatch .icon { width: 18px; height: 18px; }
+.swatch.dark { color: #fff; }
+.swatch-custom { display: flex; align-items: center; gap: 8px; margin-left: 4px; color: var(--text-2); font-size: 13px; }
+.appear-img-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+.appear-thumb { width: 120px; height: 72px; border-radius: 8px; border: 1px solid var(--border); background: var(--panel-2) center / cover no-repeat; flex: none; display: grid; place-items: center; color: var(--muted); }
+.veil-row { display: flex; align-items: center; gap: 12px; }
+.veil-row input[type=range] { flex: 1; max-width: 320px; accent-color: var(--accent); }
+.veil-row output { min-width: 44px; font-variant-numeric: tabular-nums; color: var(--text-2); }
+.appear-img-row .row { display: flex; gap: 8px; flex-wrap: wrap; }
+.bgx-sdark .list-pane ::placeholder,
+.bgx-sdark .contact-col ::placeholder,
+.bgx-sdark .cal-side ::placeholder,
+.bgx-sdark .cal-main ::placeholder { color: rgba(255, 255, 255, .7); }
+.bgx-slight .list-pane ::placeholder,
+.bgx-slight .contact-col ::placeholder,
+.bgx-slight .cal-side ::placeholder,
+.bgx-slight .cal-main ::placeholder { color: #5b6370; }
+
+/* Einstellungen in der gewählten Farbe: Reiterleiste deckend, Auswahllisten lesbar */
+.bgx-slight .settings-tabs, .bgx-sdark .settings-tabs { background: var(--surface); }
+.bgx-image.bgx-slight .settings-tabs, .bgx-image.bgx-sdark .settings-tabs { -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.bgx-sdark .settings-view option,
+.bgx-sdark .cal-main option,
+.bgx-sdark .contact-detail-pane option { color: #1c2027; background: #fff; }
+.bgx-sdark .settings-view ::placeholder { color: rgba(255, 255, 255, .6); }
+
+/* ===================================================================== Verschiebbare Spaltentrenner */
+.splitter { flex: none; width: 0; position: relative; z-index: 15; align-self: stretch; outline: none; }
+.splitter::before { content: ""; position: absolute; top: 0; bottom: 0; left: -5px; width: 10px; cursor: col-resize; }
+.splitter::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -1.5px; width: 3px; border-radius: 2px;
+  background: var(--accent); opacity: 0; transition: opacity .12s; pointer-events: none;
+}
+.splitter:hover::after { opacity: .45; transition-delay: .15s; }
+.splitter.active::after { opacity: .8; transition-delay: 0s; }
+.splitter:focus-visible::after { opacity: .8; transition-delay: 0s; }
+body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
+body.resizing iframe { pointer-events: none; }
+body:not(.agenda-view) .splitter[data-key="agenda"], body:not(.agenda-open) .splitter[data-key="agenda"] { display: none; }
+@media (min-width: 901px) {
+  .list-pane { max-width: calc(100vw - var(--sidebar-w) - 340px); }
+  .contact-col { max-width: calc(100vw - var(--sidebar-w) - 340px); }
+}
+@media (max-width: 1199px) { .splitter[data-key="agenda"] { display: none; } }
+@media (max-width: 900px) { .splitter { display: none; } }
+
+/* Kalender und Kontakte: ohne Ordnerliste */
+body.no-sidebar .sidebar, body.no-sidebar .sidebar-backdrop, body.no-sidebar .splitter[data-key="sidebar"], body.no-sidebar .appbar-menu { display: none !important; }
+body.no-sidebar .compose.max { left: 24px; }
+
+/* Schmale Bildschirme/Hochformat: keine Ordnerleiste daneben → Listen genau in der gewählten Farbe */
+@media (max-width: 900px) {
+  .bgx-slight .list-pane, .bgx-slight .contact-col, .bgx-slight .contact-detail-pane, .bgx-slight .cal-main, .bgx-slight .settings-view,
+  .bgx-sdark .list-pane, .bgx-sdark .contact-col, .bgx-sdark .contact-detail-pane, .bgx-sdark .cal-main, .bgx-sdark .settings-view,
+  .bgx-slight .settings-tabs, .bgx-sdark .settings-tabs { background: var(--bg-solid); }
+}
+.move-search { width: 100%; margin-bottom: 8px; }

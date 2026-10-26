@@ -1,5 +1,6 @@
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, formValues, fullDate } from './ui.js';
-import { get, post, patch, del } from './api.js';
+import { get, post, put, patch, del } from './api.js';
+import * as appearance from './appearance.js';
 import { state, loadAccounts } from './state.js';
 import * as reminders from './reminders.js';
 
@@ -22,7 +23,7 @@ export function unmount() { root = null; }
 
 export async function render(main, route) {
   const section = route.parts[1] || 'accounts';
-  const tabs = [['accounts', 'E-Mail-Konten'], ['dav', 'Kalender & Kontakte'], ['profile', 'Profil']];
+  const tabs = [['accounts', 'E-Mail-Konten'], ['dav', 'Kalender & Kontakte'], ['appearance', 'Darstellung'], ['profile', 'Profil']];
   const content = h('div', { class: 'settings-content' });
   root = h('div', { class: 'settings-view' },
     h('nav', { class: 'settings-tabs' }, tabs.map(([k, l]) => h('a', { href: `#/settings/${k}`, class: section === k ? 'active' : '' }, l))),
@@ -37,6 +38,8 @@ export async function render(main, route) {
     } else accountList(content);
   } else if (section === 'dav') {
     await davSection(content);
+  } else if (section === 'appearance') {
+    appearanceSection(content);
   } else {
     profileSection(content);
   }
@@ -355,8 +358,29 @@ function profileSection(c) {
     state.user = r.user;
     toast('Gespeichert');
   });
+  const imgContacts = h('label', { class: 'check' }, h('input', {
+    type: 'checkbox', checked: state.user.settings.imagesFromContacts !== false,
+    onChange: async (e) => {
+      const r = await patch('/me', { settings: { imagesFromContacts: e.target.checked } });
+      state.user = r.user;
+      toast('Gespeichert');
+    },
+  }), ' Externe Bilder in Nachrichten von Absendern aus meinen Kontakten automatisch anzeigen');
+  let trustedCount = 0;
+  try { trustedCount = JSON.parse(localStorage.getItem('wm.trusted') || '[]').length; } catch { /* leer */ }
+  const trustedInfo = trustedCount ? h('p', { class: 'muted small' },
+    `Zusätzlich ${trustedCount === 1 ? 'ist 1 Absender' : `sind ${trustedCount} Absender`} über „Immer von …“ freigegeben (in diesem Browser). `,
+    h('button', {
+      class: 'link-btn', type: 'button', onClick: (e) => {
+        try { localStorage.removeItem('wm.trusted'); } catch { /* egal */ }
+        e.target.parentNode.remove();
+        toast('Freigaben zurückgesetzt');
+      },
+    }, 'Zurücksetzen')) : null;
   const mailPrefs = h('div', { class: 'form-grid narrow' },
-    field('Antworten ablegen', replySel, 'Gilt für „Antworten“ und „Allen antworten“. Antworten auf Nachrichten aus Gesendet, Papierkorb oder Spam landen immer in „Gesendet“.'));
+    field('Antworten ablegen', replySel, 'Gilt für „Antworten“ und „Allen antworten“. Antworten auf Nachrichten aus Gesendet, Papierkorb oder Spam landen immer in „Gesendet“.'),
+    imgContacts,
+    trustedInfo);
 
   const notifOn = state.user.settings.notifications !== false;
   const remCfg = reminders.settings();
@@ -414,4 +438,120 @@ function profileSection(c) {
       ['f', 'Weiterleiten'], ['e', 'Archivieren'], ['# / Entf', 'Löschen'], ['s', 'Markieren'], ['u', 'Als ungelesen markieren'],
       ['v', 'Verschieben'], ['/', 'Suchen'], ['Strg+Enter', 'Senden (im Editor)'],
     ].map(([k, d]) => h('tr', {}, h('td', {}, h('kbd', {}, k)), h('td', {}, d)))));
+}
+
+// ====================================================================== Darstellung
+
+function appearanceSection(c) {
+  let cfg = appearance.normalize(state.user.settings.appearance);
+  let saveTimer = null;
+
+  const save = (immediate = false) => {
+    clearTimeout(saveTimer);
+    const run = async () => {
+      try {
+        const r = await patch('/me', { settings: { appearance: { color: cfg.color, veil: cfg.veil, image: cfg.image, listGlass: cfg.listGlass } } });
+        state.user = r.user;
+      } catch (err) { toast(err.message, 'error'); }
+    };
+    if (immediate) run(); else saveTimer = setTimeout(run, 400);
+  };
+  const update = (changes, immediate) => {
+    cfg = { ...cfg, ...changes };
+    appearance.apply(cfg);
+    render();
+    save(immediate);
+  };
+
+  const fileInput = h('input', {
+    type: 'file', accept: 'image/jpeg,image/png,image/webp,image/*', hidden: true,
+    onChange: async () => {
+      const file = fileInput.files[0];
+      fileInput.value = '';
+      if (!file) return;
+      try {
+        toast('Bild wird hochgeladen …');
+        const img = await appearance.prepareImage(file);
+        const r = await put('/me/background', { dataUrl: img.dataUrl, luminance: img.luminance });
+        state.user = r.user;
+        cfg = appearance.normalize(r.user.settings.appearance);
+        appearance.apply(cfg);
+        render();
+        toast('Hintergrundbild gespeichert', 'success');
+      } catch (err) { toast(err.message, 'error'); }
+    },
+  });
+
+  const swatchRow = h('div', { class: 'swatches' });
+  const colorPick = h('input', {
+    type: 'color', value: cfg.color || '#e8edf5', title: 'Eigene Farbe wählen',
+    onInput: (e) => { cfg = { ...cfg, color: e.target.value }; appearance.apply(cfg); markSwatches(); save(); },
+  });
+  function markSwatches() {
+    for (const b of swatchRow.querySelectorAll('.swatch')) b.classList.toggle('on', (b.dataset.color || null) === cfg.color);
+  }
+  for (const [col, label] of appearance.PRESETS) {
+    const dark = col && appearance.luminance([1, 3, 5].map((i) => parseInt(col.slice(i, i + 2), 16))) < 0.3;
+    swatchRow.appendChild(h('button', {
+      type: 'button', class: `swatch${col ? '' : ' default'}${dark ? ' dark' : ''}`, title: label, 'aria-label': label,
+      dataset: col ? { color: col } : {}, style: col ? { background: col } : {},
+      onClick: () => { if (col) colorPick.value = col; update({ color: col }, true); },
+    }));
+  }
+  swatchRow.appendChild(h('label', { class: 'swatch-custom' }, colorPick, 'Eigene Farbe'));
+
+  const veilOut = h('output');
+  const veil = h('input', {
+    type: 'range', min: '0', max: '90', step: '5', value: String(cfg.veil), 'aria-label': 'Farbschleier über dem Bild',
+    onInput: (e) => { cfg = { ...cfg, veil: Number(e.target.value) }; veilOut.textContent = `${cfg.veil} %`; appearance.apply(cfg); save(); },
+  });
+  const imgArea = h('div');
+  const preview = h('div', { class: 'appear-preview', 'aria-hidden': 'true' },
+    h('div', { class: 'pv-side' }, h('div', { class: 'pv-line accent' }), h('div', { class: 'pv-line' }), h('div', { class: 'pv-line short' }), h('div', { class: 'pv-line' }), h('div', { class: 'pv-line short' })),
+    h('div', { class: 'pv-panel' }, h('div', { class: 'pv-line' }), h('div', { class: 'pv-line short' }), h('div', { class: 'pv-line' })));
+
+  function render() {
+    markSwatches();
+    veilOut.textContent = `${cfg.veil} %`;
+    veil.value = String(cfg.veil);
+    const thumb = h('div', { class: 'appear-thumb', style: cfg.image ? { backgroundImage: `url("/api/me/background?v=${encodeURIComponent(cfg.image.v)}")` } : {} },
+      cfg.image ? null : icon('image', 24));
+    clear(imgArea,
+      h('div', { class: 'appear-img-row' }, thumb,
+        h('div', { class: 'row' },
+          h('button', { class: 'btn', type: 'button', onClick: () => fileInput.click() }, icon('image', 16), cfg.image ? 'Anderes Bild wählen …' : 'Bild wählen …'),
+          cfg.image ? h('button', {
+            class: 'btn btn-danger', type: 'button', onClick: async () => {
+              try {
+                const r = await del('/me/background');
+                state.user = r.user;
+                cfg = appearance.normalize(r.user.settings.appearance);
+                appearance.apply(cfg);
+                render();
+                toast('Hintergrundbild entfernt');
+              } catch (err) { toast(err.message, 'error'); }
+            },
+          }, icon('trash', 16), 'Entfernen') : null)),
+      h('p', { class: 'muted small' }, 'JPEG, PNG oder WebP. Grosse Bilder werden automatisch verkleinert (max. 2560 px). Das Bild ist nur für dich sichtbar.'),
+      cfg.image ? field('Farbschleier über dem Bild', h('div', { class: 'veil-row' }, veil, veilOut),
+        'Legt die gewählte Hintergrundfarbe halbtransparent über das Bild – höhere Werte machen Ordner und Termine besser lesbar.') : null);
+  }
+
+  render();
+  clear(c,
+    h('div', { class: 'section-head' }, h('h2', {}, 'Darstellung')),
+    preview,
+    h('h3', {}, 'Hintergrundfarbe'),
+    swatchRow,
+    h('p', { class: 'muted small' }, 'Die Farbe erscheint hinter Ordnerliste, Lesebereich und Terminspalte. Schrift wird automatisch hell oder dunkel gesetzt. Im dunklen Farbschema des Systems wird die Farbe passend abgedunkelt.'),
+    h('h3', { style: { marginTop: '28px' } }, 'Hintergrundbild'),
+    imgArea,
+    h('h3', { style: { marginTop: '28px' } }, 'Mail-Liste, Kontakte, Kalender'),
+    h('label', { class: 'check' }, h('input', {
+      type: 'checkbox', checked: cfg.listGlass,
+      onChange: (e) => update({ listGlass: e.target.checked }, true),
+    }), ' Auch Mail-Liste, Kontakte und Kalender in der gewählten Farbe darstellen'),
+    fileInput,
+    h('p', { class: 'muted small', style: { marginTop: '24px' } }, 'Die Einstellungen gelten für dein Benutzerkonto – auf allen Geräten und in allen Browsern.'),
+    h('p', { class: 'muted small', style: { wordBreak: 'break-all' } }, `Browser: ${navigator.userAgent}`));
 }

@@ -1,6 +1,7 @@
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, timeOnly, dateInput, timeInput, parseTime } from './ui.js';
 import { get, post, put, del, patch } from './api.js';
 import * as reminders from './reminders.js';
+import { notify } from './state.js';
 
 const WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const monthFmt = new Intl.DateTimeFormat('de-CH', { month: 'long', year: 'numeric' });
@@ -39,10 +40,23 @@ function span(ev) {
 
 export function unmount() { root = null; }
 
-export async function render(main) {
+export async function render(main, r) {
+  // #/calendar/JJJJ-MM-TT: zu diesem Datum springen (z. B. aus der Terminspalte)
+  const target = r && r.parts && /^\d{4}-\d{2}-\d{2}$/.test(r.parts[1] || '') ? parseDateOnly(r.parts[1]) : null;
+  if (target) cursor = target;
   if (!root || !main.contains(root)) mount(main);
   await loadCollections();
   await loadEvents();
+  openRequestedEvent();
+}
+
+/** Termin öffnen, der aus der Terminspalte angeklickt wurde. */
+function openRequestedEvent() {
+  let req = null;
+  try { req = JSON.parse(sessionStorage.getItem('wm.openEvent') || 'null'); sessionStorage.removeItem('wm.openEvent'); } catch { /* egal */ }
+  if (!req) return;
+  const ev = events.find((e) => e.id === req.id && e.start === req.start) || events.find((e) => e.id === req.id);
+  if (ev) eventDialog(ev);
 }
 
 function mount(main) {
@@ -109,7 +123,7 @@ function renderCalList() {
     cals.map((c) => h('label', { class: 'cal-item' },
       h('input', {
         type: 'checkbox', checked: !hid.has(c.url),
-        onChange: (e) => { const s = hidden(); if (e.target.checked) s.delete(c.url); else s.add(c.url); setHidden(s); loadEvents(); },
+        onChange: (e) => { const s = hidden(); if (e.target.checked) s.delete(c.url); else s.add(c.url); setHidden(s); loadEvents(); notify('events'); },
       }),
       h('span', { class: 'cal-dot', style: { background: c.color || '#3b6fd8' } }),
       h('span', { class: 'cal-name' }, c.name),
@@ -335,6 +349,7 @@ function eventDialog(ev, day) {
     }
     toast('Termin gespeichert', 'success');
     reminders.reschedule();
+    notify('events');
     loadEvents();
     return false;
   };
@@ -349,6 +364,7 @@ function eventDialog(ev, day) {
         await del('/events', { sourceId: ev.sourceId, url: ev.url, etag: ev.etag });
         toast('Termin gelöscht');
         reminders.reschedule();
+        notify('events');
         loadEvents();
         return false;
       } } : null,

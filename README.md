@@ -14,7 +14,7 @@ Browser-Mailclient für mehrere Benutzer, komplett als Docker-Compose-Stack.
 | Mehrere Konten | Beliebig viele IMAP/SMTP-Konten pro Benutzer, je eigener Sync-Worker |
 | Mehrere Identitäten | Pro Konto beliebig viele Absender (Name, Adresse, Reply-To, Auto-Bcc, Signatur). Antworten wählen automatisch die Identität, an die die Mail ging |
 
-Außerdem: HTML-Mails in einer Sandbox ohne Skripte, externe Bilder standardmäßig blockiert (pro Absender freigebbar), Rich-Text-Editor, Anhänge (auch per Drag & Drop), Entwürfe mit Autosave, Weiterleiten inkl. Anhängen oder als .eml, Suche, Tastenkürzel, Dark Mode, Mobil-Layout.
+Außerdem: HTML-Mails in einer Sandbox ohne Skripte, externe Bilder standardmäßig blockiert (bei Absendern aus den eigenen Kontakten automatisch angezeigt, abschaltbar im Profil; sonst pro Absender freigebbar), einklappbare Terminspalte rechts in der Mail-Ansicht mit den Terminen der nächsten 4 Wochen, Rich-Text-Editor, Anhänge (auch per Drag & Drop), Entwürfe mit Autosave, Weiterleiten inkl. Anhängen oder als .eml, Drucken bzw. als PDF speichern (einzelne Nachricht, ganze Konversation oder mehrere ausgewählte; auch mit Strg+P), Suche, Tastenkürzel, Dark Mode, Mobil-Layout, verschiebbare Spaltentrenner (Breiten pro Browser gespeichert, Doppelklick = Standard), eigene Hintergrundfarbe und eigenes Hintergrundbild pro Benutzer (Einstellungen → Darstellung; Schrift wird automatisch hell/dunkel gewählt; Mail-Liste, Kontakte, Kalender und Einstellungen optional in derselben Farbe).
 
 ## Architektur
 
@@ -61,6 +61,7 @@ Mit `AUTH_MODE=imap` meldet man sich mit Benutzername und Passwort des Mailserve
 - Ändert sich das Passwort am Mailserver, übernimmt Webmail es beim nächsten Login für das Postfach.
 - Mit `AUTH_DEFAULT_DOMAIN=example.com` reicht die Eingabe `marcus` statt `marcus@example.com`.
 - Admin-Rechte bekommen die Logins in `AUTH_ADMINS`.
+- **„Angemeldet bleiben“** (auf der Anmeldeseite, standardmässig aktiv): Die Sitzung bleibt `SESSION_DAYS` Tage (Standard 30) nach der letzten Nutzung bestehen und verlängert sich bei jeder Nutzung. Ohne Häkchen endet sie beim Schliessen des Browsers bzw. nach `SESSION_IDLE_HOURS` Stunden ohne Aktivität. Der Browser merkt sich nur den Benutzernamen, nie das Passwort. Auf gemeinsam genutzten Geräten das Häkchen entfernen bzw. abmelden.
 - Mit `AUTH_DAV_URL` wird zusätzlich ein CalDAV/CardDAV-Server mit denselben Zugangsdaten eingebunden (z. B. Nextcloud oder SOGo, wenn dort dieselben Logins gelten).
 - Lokale Benutzer (z. B. ein Notfall-Admin mit `ADMIN_PASSWORD`, oder in der Benutzerverwaltung angelegte) melden sich weiterhin mit ihrem eigenen Passwort an. Ist der Mailserver nicht erreichbar, zeigt der Login das an, statt „Passwort falsch“ zu melden.
 
@@ -127,6 +128,8 @@ Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. 
 | `LDAP_PASSWORD_METHOD` | exop | `exop` (RFC 3062), `ssha`, `plain` oder `ad` (Active Directory, nur LDAPS) |
 | `SYSTEM_SMTP_*`, `SYSTEM_MAIL_FROM` | – | SMTP für Systemmails (Passwort vergessen) |
 | `HTTP_BIND` / `HTTP_PORT` | 127.0.0.1 / 8080 | Wo die App lauscht. `0.0.0.0` für Zugriff aus dem LAN |
+| `SESSION_DAYS` | 30 | „Angemeldet bleiben“: Sitzung bleibt so viele Tage nach der letzten Nutzung gültig (wird bei Nutzung verlängert) |
+| `SESSION_IDLE_HOURS` | 12 | Ohne „Angemeldet bleiben“: Sitzung endet mit dem Browser bzw. nach so vielen Stunden Inaktivität |
 | `COOKIE_SECURE`, `TRUST_PROXY` | true | Für Betrieb hinter Nginx mit HTTPS. Nur für Tests ohne HTTPS auf `false` setzen (sonst klappt der Login nicht) |
 | `ALLOW_REGISTRATION` | false | Selbstregistrierung erlauben |
 | `SYNC_INITIAL_MESSAGES` | 1000 | Nachrichten pro Ordner beim Erst-Sync |
@@ -138,6 +141,7 @@ Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. 
   `docker compose exec db pg_dump -U webmail webmail > backup.sql`
 - **Update**: `docker compose pull && docker compose up -d --build`
 - **Logs**: `docker compose logs -f app`
+- **Browser-Cache**: Die Oberfläche wird unter `/v/<kennung>/…` ausgeliefert; die Kennung ändert sich bei jedem Update automatisch. Browser – auch auf dem Handy – laden nach einem Update daher sofort die neuen Dateien, ohne Cache leeren.
 - Der Nachrichtenindex ist ein Cache – bei Problemen mit einem Konto: Konto speichern (verbindet neu) oder Server-Einstellungen ändern (Index wird neu aufgebaut).
 
 ## Bekannte Grenzen

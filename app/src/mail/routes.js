@@ -97,6 +97,12 @@ function accountInput(b, existing) {
   return v;
 }
 
+async function folderCounts(ids) {
+  if (!ids.length) return [];
+  const rows = await db.many('SELECT id, account_id, total, unseen FROM folders WHERE id = ANY($1::int[])', [ids]);
+  return rows.map((r) => ({ id: r.id, accountId: r.account_id, total: r.total, unseen: r.unseen }));
+}
+
 function router() {
   const r = express.Router();
 
@@ -118,6 +124,13 @@ function router() {
         identities: identities.filter((i) => i.account_id === a.id).map(publicIdentity),
       })),
     });
+  }));
+
+  r.get('/folder-counts', wrap(async (req, res) => {
+    const rows = await db.many(
+      `SELECT f.id, f.account_id, f.total, f.unseen FROM folders f JOIN mail_accounts a ON a.id = f.account_id
+        WHERE a.user_id = $1`, [req.user.id]);
+    res.json({ folders: rows.map((r) => ({ id: r.id, accountId: r.account_id, total: r.total, unseen: r.unseen })) });
   }));
 
   r.post('/accounts/test', wrap(async (req, res) => {
@@ -309,7 +322,7 @@ function router() {
     await db.query(`UPDATE messages SET flags = array_append(flags, '\\Seen') WHERE folder_id = $1 AND NOT ('\\Seen' = ANY(flags))`, [f.id]);
     await db.query('UPDATE folders SET unseen = 0 WHERE id = $1', [f.id]);
     hub.send(req.user.id, { t: 'folder', accountId: f.account_id, folderId: f.id, total: f.total, unseen: 0, changed: true, newMessages: [] });
-    res.json({ ok: true });
+    res.json({ ok: true, folders: await folderCounts([f.id]) });
   }));
 
   r.post('/folders/:id/empty', wrap(async (req, res) => {
@@ -436,8 +449,11 @@ function router() {
     if (req.query.markSeen !== '0' && !msg.flags.includes('\\Seen')) {
       await store.changeFlagsLocal(msg.folder_id, [msg.uid], ['\\Seen'], true);
       manager.get(msg.account_id).setFlags(msg.folder_path, [msg.uid], ['\\Seen'], true).catch(() => {});
-      const f = await db.one('SELECT total, unseen FROM folders WHERE id = $1', [msg.folder_id]);
-      hub.send(req.user.id, { t: 'folder', accountId: msg.account_id, folderId: msg.folder_id, total: f.total, unseen: f.unseen, changed: false, newMessages: [] });
+      const [f] = await folderCounts([msg.folder_id]);
+      if (f) {
+        hub.send(req.user.id, { t: 'folder', accountId: f.accountId, folderId: f.id, total: f.total, unseen: f.unseen, changed: false, newMessages: [] });
+        payload.folders = [f];
+      }
     }
     res.json(payload);
   }));
@@ -530,7 +546,9 @@ function router() {
       seen: ['\\Seen', true], unseen: ['\\Seen', false], flag: ['\\Flagged', true], unflag: ['\\Flagged', false],
     };
     const touched = new Set();
+    const touchedFolders = new Set();
     for (const g of groups.values()) {
+      touchedFolders.add(g.folderId);
       const w = manager.get(g.accountId);
       touched.add(g.accountId);
       if (flagMap[action]) {
@@ -578,15 +596,24 @@ function router() {
         }
       }
       if (action !== 'copy') {
+        const cnt = await db.one(
+          `SELECT count(*)::int AS total, count(*) FILTER (WHERE NOT ('\\Seen' = ANY(flags)))::int AS unseen
+             FROM messages WHERE folder_id = $1 AND uid = ANY($2::bigint[])`, [g.folderId, g.uids]);
         await db.query('DELETE FROM messages WHERE folder_id = $1 AND uid = ANY($2::bigint[])', [g.folderId, g.uids]);
+        await db.query('UPDATE folders SET unseen = GREATEST(0, unseen - $2), total = GREATEST(0, total - $3) WHERE id = $1',
+          [g.folderId, cnt.unseen, cnt.total]);
+        if (dest) {
+          await db.query('UPDATE folders SET unseen = unseen + $2, total = total + $3 WHERE id = $1', [dest.id, cnt.unseen, cnt.total]);
+          touchedFolders.add(dest.id);
+        }
       }
     }
-    // Zähler an Clients
-    for (const g of groups.values()) {
-      const f = await db.one('SELECT total, unseen FROM folders WHERE id = $1', [g.folderId]);
-      if (f) hub.send(req.user.id, { t: 'folder', accountId: g.accountId, folderId: g.folderId, total: f.total, unseen: f.unseen, changed: true, newMessages: [] });
+    // Zähler an Clients (Push) und direkt in der Antwort (falls die Live-Verbindung fehlt)
+    const counts = await folderCounts([...touchedFolders]);
+    for (const f of counts) {
+      hub.send(req.user.id, { t: 'folder', accountId: f.accountId, folderId: f.id, total: f.total, unseen: f.unseen, changed: true, newMessages: [] });
     }
-    res.json({ ok: true });
+    res.json({ ok: true, folders: counts });
   }));
 
   // ================================================================== Verfassen
