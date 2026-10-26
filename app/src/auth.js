@@ -76,6 +76,9 @@ async function userFromRequest(req, res) {
       [sid, String(lifetime)]).catch(() => {});
     if (res && row.s_persistent && !res.headersSent) setSessionCookie(res, sid, lifetime);
   }
+  if (!row.last_seen_at || Date.now() - new Date(row.last_seen_at).getTime() > 5 * 60000) {
+    db.query('UPDATE users SET last_seen_at = now() WHERE id = $1', [row.id]).catch(() => {});
+  }
   row.sid = sid;
   return row;
 }
@@ -207,6 +210,12 @@ function router({ onUserDeleted }) {
       const password = String(req.body.password || '');
       const key = `${req.ip}:${username}`;
       if (tooManyFailures(key)) return res.status(429).json({ error: 'Zu viele Fehlversuche – bitte später erneut versuchen' });
+      // Mit IMAP-Anmeldung gilt die vollständige E-Mail-Adresse als Login.
+      // Ausnahme: lokal angelegte Benutzer (z. B. Notfall-Admin) mit ihrem Benutzernamen.
+      if (config.authMode === 'imap' && !username.includes('@')) {
+        const local = await db.one("SELECT 1 FROM users WHERE username = $1 AND auth_source <> 'imap'", [username]);
+        if (!local) return res.status(400).json({ error: 'Bitte mit der vollständigen E-Mail-Adresse anmelden (z. B. name@beispiel.ch)' });
+      }
       const user = await authenticate(username, password);
       if (!user) {
         noteFailure(key);
@@ -223,6 +232,7 @@ function router({ onUserDeleted }) {
          VALUES ($1, $2, now() + ($3 || ' seconds')::interval, $4, $5)`,
         [sid, user.id, String(lifetime), String(req.get('user-agent') || '').slice(0, 300), persistent]);
       db.query('DELETE FROM sessions WHERE expires_at < now()').catch(() => {});
+      db.query('UPDATE users SET last_login_at = now(), last_seen_at = now() WHERE id = $1', [user.id]).catch(() => {});
       setSessionCookie(res, sid, persistent ? lifetime : null);
       res.json({ user: publicUser(user) });
     } catch (err) { next(err); }
@@ -337,7 +347,12 @@ function router({ onUserDeleted }) {
     try {
       const rows = await db.many(
         `SELECT u.id, u.username, u.display_name, u.is_admin, u.created_at, u.auth_source,
-                (SELECT count(*)::int FROM mail_accounts a WHERE a.user_id = u.id) AS accounts
+                u.last_login_at, u.last_seen_at,
+                (SELECT count(*)::int FROM mail_accounts a WHERE a.user_id = u.id) AS accounts,
+                (SELECT coalesce(json_agg(json_build_object(
+                          'name', a.name, 'email', a.email, 'used', a.quota_used, 'limit', a.quota_limit,
+                          'source', a.quota_source, 'checked', a.quota_checked_at) ORDER BY a.sort_order, a.id), '[]'::json)
+                   FROM mail_accounts a WHERE a.user_id = u.id) AS mailboxes
          FROM users u ORDER BY u.username`);
       res.json({ users: rows });
     } catch (err) { next(err); }

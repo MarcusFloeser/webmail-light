@@ -523,14 +523,23 @@ async function openThread(threadId, { soft = false } = {}) {
   } else {
     for (const m of t.messages) if (!prevIds.split(',').includes(String(m.id))) expanded.add(m.id);
   }
-  renderThread();
-  // Liste: Thread als gelesen anzeigen
+  // Konversation ist geöffnet → alle ihre Nachrichten in diesem Ordner als gelesen markieren
+  // (auch Kopien, die die Ansicht als Duplikat ausblendet, und Mails mit zwischengespeichertem Inhalt)
   const lt = cur.threads.find((x) => x.threadId === threadId);
-  if (lt && lt.unread) {
-    lt.unread = false;
-    const li = els.list.querySelector(`[data-thread-id="${threadId}"]`);
-    if (li) li.classList.remove('unread');
+  const unseenShown = t.messages.filter((m) => !m.flags.includes('\\Seen')).map((m) => m.id);
+  if ((lt && lt.unread) || unseenShown.length) {
+    const ids = [...new Set([...(lt ? lt.messageIds : []), ...unseenShown].map(Number))];
+    if (lt) {
+      lt.unread = false;
+      const li = els.list.querySelector(`[data-thread-id="${threadId}"]`);
+      if (li) li.classList.remove('unread');
+    }
+    for (const m of t.messages) if (!m.flags.includes('\\Seen')) m.flags = [...m.flags, '\\Seen'];
+    post('/messages/actions', { ids, action: 'seen' })
+      .then((r) => applyFolderCounts(r.folders))
+      .catch(() => {});
   }
+  renderThread();
 }
 
 function renderThread() {
@@ -539,7 +548,7 @@ function renderThread() {
   const special = found ? found.folder.specialUse : null;
   const anyUnread = t.messages.some((m) => !m.flags.includes('\\Seen'));
   const flagged = t.messages.some((m) => m.flags.includes('\\Flagged'));
-  const last = [...t.messages].reverse().find((m) => m.folderSpecial !== '\\Sent' && m.folderSpecial !== '\\Drafts') || t.messages[t.messages.length - 1];
+  const last = [...t.messages].reverse().find((m) => !m.duplicate && m.folderSpecial !== '\\Sent' && m.folderSpecial !== '\\Drafts') || t.messages[t.messages.length - 1];
 
   const toolbar = h('div', { class: 'reader-toolbar' },
     iconButton('back', 'Zurück', () => { location.hash = `#/mail/${cur.folderId}`; }, { class: 'only-mobile' }),
@@ -597,7 +606,8 @@ function messageCard(m, isLast) {
     h('div', { class: 'msg-from' },
       h('strong', {}, m.fromName || m.fromAddr),
       m.fromName ? h('span', { class: 'addr' }, `<${m.fromAddr}>`) : null,
-      otherFolder ? h('span', { class: 'chip' }, m.folderSpecial ? folderLabel({ specialUse: m.folderSpecial, name: m.folderName }) : m.folderName) : null),
+      otherFolder ? h('span', { class: 'chip' }, m.folderSpecial ? folderLabel({ specialUse: m.folderSpecial, name: m.folderName }) : m.folderName) : null,
+      m.duplicate ? h('span', { class: 'chip chip-dup', title: 'Weiteres Exemplar derselben Nachricht in diesem Ordner (z. B. doppelt zugestellt). Über „Mehr → Diese Nachricht löschen“ entfernen.' }, 'Kopie') : null),
     isOpen
       ? h('div', { class: 'msg-to' }, recipientsLine(m))
       : h('div', { class: 'msg-preview' }, m.preview || '')),
@@ -888,7 +898,7 @@ function onKey(e) {
     const li = els.list.querySelector(`[data-thread-id="${t.threadId}"]`);
     if (li) li.scrollIntoView({ block: 'nearest' });
   };
-  const last = cur.thread && cur.thread.messages[cur.thread.messages.length - 1];
+  const last = cur.thread && ([...cur.thread.messages].reverse().find((m) => !m.duplicate) || cur.thread.messages[cur.thread.messages.length - 1]);
   switch (e.key) {
     case 'j': case 'ArrowDown': e.preventDefault(); go(idx + 1); break;
     case 'k': case 'ArrowUp': e.preventDefault(); go(Math.max(0, idx - 1)); break;

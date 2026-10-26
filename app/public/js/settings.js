@@ -1,6 +1,7 @@
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, formValues, fullDate } from './ui.js';
 import { get, post, put, patch, del } from './api.js';
 import * as appearance from './appearance.js';
+import { richEditor } from './richtext.js';
 import { state, loadAccounts } from './state.js';
 import * as reminders from './reminders.js';
 
@@ -232,6 +233,7 @@ function accountForm(c, a, append = false) {
 
 function identityDialog(a, i) {
   const v = i || { name: state.user.displayName || '', email: '', replyTo: '', bcc: '', signature: '', isDefault: false };
+  const sig = richEditor({ html: v.signature, placeholder: 'z. B. Name, Funktion, Telefon, Logo …' });
   const form = h('form', { class: 'form-grid' },
     h('div', { class: 'row2' },
       field('Name', h('input', { name: 'name', value: v.name })),
@@ -239,7 +241,7 @@ function identityDialog(a, i) {
     h('div', { class: 'row2' },
       field('Antwort an (optional)', h('input', { name: 'replyTo', type: 'email', value: v.replyTo })),
       field('Immer Bcc an (optional)', h('input', { name: 'bcc', type: 'email', value: v.bcc }))),
-    field('Signatur', h('textarea', { name: 'signature', rows: 5 }, v.signature), 'Text oder einfaches HTML. Wird mit „-- “ abgetrennt eingefügt.'),
+    field('Signatur', sig.el, 'Wird beim Schreiben mit „-- “ abgetrennt unter der Nachricht eingefügt. Bilder (z. B. Logo) werden eingebettet mitgeschickt. Über </> lässt sich der HTML-Quelltext bearbeiten.'),
     h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'isDefault', checked: v.isDefault }), ' Standard-Identität dieses Kontos'));
   modal({
     title: i ? 'Identität bearbeiten' : 'Neue Identität',
@@ -249,6 +251,7 @@ function identityDialog(a, i) {
       { label: 'Abbrechen' },
       { label: 'Speichern', primary: true, onClick: async () => {
         const d = formValues(form);
+        d.signature = sig.getHtml();
         if (i) await patch(`/identities/${i.id}`, d);
         else await post(`/accounts/${a.id}/identities`, d);
         await loadAccounts();

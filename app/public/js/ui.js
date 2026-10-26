@@ -194,7 +194,11 @@ export function promptDialog(title, label, value = '') {
 
 // ------------------------------------------------------------------ Formular-Helfer
 export function field(label, input, hint) {
-  return h('label', { class: 'field' }, h('span', {}, label), input, hint ? h('small', { class: 'hint' }, hint) : null);
+  // <label> nur um einzelne Eingabefelder: Ein Klick in ein Label löst sonst einen Klick auf das
+  // erste Bedienelement darin aus (z. B. den Fett-Knopf eines Editors)
+  const simple = input instanceof HTMLElement && /^(INPUT|SELECT|TEXTAREA)$/.test(input.tagName);
+  return h(simple ? 'label' : 'div', { class: 'field', ...(simple ? {} : { role: 'group' }) },
+    h('span', {}, label), input, hint ? h('small', { class: 'hint' }, hint) : null);
 }
 
 export function formValues(form) {

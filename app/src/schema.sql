@@ -144,3 +144,11 @@ CREATE TABLE IF NOT EXISTS user_backgrounds (
   data        TEXT NOT NULL,
   updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Admin-Übersicht: letzte Anmeldung/Aktivität und Mailbox-Grösse
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_login_at TIMESTAMPTZ;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS last_seen_at TIMESTAMPTZ;
+ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_used BIGINT;
+ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_limit BIGINT;
+ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_source TEXT;        -- quota | estimate
+ALTER TABLE mail_accounts ADD COLUMN IF NOT EXISTS quota_checked_at TIMESTAMPTZ;

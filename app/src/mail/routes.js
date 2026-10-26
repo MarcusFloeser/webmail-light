@@ -416,17 +416,34 @@ function router() {
   r.get('/threads/:threadId', wrap(async (req, res) => {
     const threadId = parseInt(req.params.threadId, 10);
     const folderId = parseInt(req.query.folder, 10) || 0;
-    const rows = await db.many(
-      `SELECT DISTINCT ON (coalesce(m.message_id, m.id::text))
-              m.*, f.path AS folder_path, f.name AS folder_name, f.special_use AS folder_special
+    const all = await db.many(
+      `SELECT m.*, f.path AS folder_path, f.name AS folder_name, f.special_use AS folder_special
          FROM messages m
          JOIN folders f ON f.id = m.folder_id
          JOIN mail_accounts a ON a.id = m.account_id
         WHERE m.thread_id = $1 AND a.user_id = $2
           AND (f.id = $3 OR coalesce(f.special_use, '') NOT IN ('\\Trash', '\\Junk')
                OR EXISTS (SELECT 1 FROM folders x WHERE x.id = $3 AND x.special_use IN ('\\Trash', '\\Junk')))
-        ORDER BY coalesce(m.message_id, m.id::text), (f.id = $3) DESC, (f.special_use = '\\All') ASC, m.id`,
+        ORDER BY (f.id = $3) DESC, (f.special_use = '\\All') ASC, m.id`,
       [threadId, req.user.id, folderId]);
+    // Alle Exemplare im aktuellen Ordner anzeigen (auch doppelte – sonst bleiben unsichtbare Leichen).
+    // Aus anderen Ordnern nur Nachrichten, die hier noch nicht vorkommen – je eine pro Message-ID.
+    const key = (m) => m.message_id || `id:${m.id}`;
+    const seenKeys = new Set();
+    const rows = [];
+    const dupCount = new Map();
+    for (const m of all) {
+      const k = key(m);
+      if (m.folder_id === folderId) {
+        dupCount.set(k, (dupCount.get(k) || 0) + 1);
+        m.duplicate = dupCount.get(k) > 1;
+        seenKeys.add(k);
+        rows.push(m);
+      } else if (!seenKeys.has(k)) {
+        seenKeys.add(k);
+        rows.push(m);
+      }
+    }
     rows.sort((a, b) => new Date(a.date || 0) - new Date(b.date || 0));
     res.json({
       threadId,
@@ -435,7 +452,7 @@ function router() {
         id: m.id, accountId: m.account_id, folderId: m.folder_id, folderName: m.folder_name, folderSpecial: m.folder_special,
         uid: m.uid, messageId: m.message_id, subject: m.subject, fromName: m.from_name, fromAddr: m.from_addr,
         to: m.to_list, cc: m.cc_list, date: m.date, flags: m.flags, hasAttachments: m.has_attachments,
-        preview: m.preview, size: m.size,
+        preview: m.preview, size: m.size, duplicate: !!m.duplicate,
       })),
     });
   }));
@@ -446,13 +463,25 @@ function router() {
     const msg = await message.getOwned(parseInt(req.params.id, 10), req.user.id);
     const parsed = await message.loadParsed(msg);
     const payload = message.bodyPayload(msg, parsed);
-    if (req.query.markSeen !== '0' && !msg.flags.includes('\\Seen')) {
-      await store.changeFlagsLocal(msg.folder_id, [msg.uid], ['\\Seen'], true);
-      manager.get(msg.account_id).setFlags(msg.folder_path, [msg.uid], ['\\Seen'], true).catch(() => {});
-      const [f] = await folderCounts([msg.folder_id]);
-      if (f) {
-        hub.send(req.user.id, { t: 'folder', accountId: f.accountId, folderId: f.id, total: f.total, unseen: f.unseen, changed: false, newMessages: [] });
-        payload.folders = [f];
+    if (req.query.markSeen !== '0') {
+      // Diese Nachricht und ungelesene Kopien (gleiche Message-ID) als gelesen markieren
+      const targets = (msg.flags.includes('\\Seen') ? [] : [{ uid: msg.uid, folder_id: msg.folder_id, path: msg.folder_path }])
+        .concat((await copiesOf([{ id: msg.id, account_id: msg.account_id, message_id: msg.message_id }]))
+          .filter((c) => !(c.flags || []).includes('\\Seen')));
+      if (targets.length) {
+        const byFolder = new Map();
+        for (const t of targets) {
+          if (!byFolder.has(t.folder_id)) byFolder.set(t.folder_id, { path: t.path, uids: [] });
+          byFolder.get(t.folder_id).uids.push(Number(t.uid));
+        }
+        for (const [folderId, g] of byFolder) {
+          await store.changeFlagsLocal(folderId, g.uids, ['\\Seen'], true);
+          manager.get(msg.account_id).setFlags(g.path, g.uids, ['\\Seen'], true).catch(() => {});
+        }
+        payload.folders = await folderCounts([...byFolder.keys()]);
+        for (const f of payload.folders) {
+          hub.send(req.user.id, { t: 'folder', accountId: f.accountId, folderId: f.id, total: f.total, unseen: f.unseen, changed: false, newMessages: [] });
+        }
       }
     }
     res.json(payload);
@@ -523,14 +552,31 @@ function router() {
   /**
    * body: { ids: [...], action: seen|unseen|flag|unflag|delete|archive|spam|move|copy, target: folderId }
    */
+  /**
+   * Weitere Exemplare derselben Nachricht (gleiche Message-ID, gleiches Konto) – z. B. doppelt
+   * zugestellte Mails oder Kopien in anderen Ordnern. Die Konversations-Ansicht zeigt nur eines davon;
+   * gelesen/ungelesen soll trotzdem für alle gelten.
+   */
+  async function copiesOf(rows) {
+    const known = rows.map((m) => Number(m.id));
+    const pairs = rows.filter((m) => m.message_id);
+    if (!pairs.length) return [];
+    return db.many(
+      `SELECT m.id, m.uid, m.flags, m.account_id, m.folder_id, m.message_id, f.path, f.special_use
+         FROM messages m JOIN folders f ON f.id = m.folder_id
+        WHERE m.account_id = ANY($1::int[]) AND m.message_id = ANY($2::text[]) AND m.id <> ALL($3::bigint[])`,
+      [[...new Set(pairs.map((m) => m.account_id))], [...new Set(pairs.map((m) => m.message_id))], known]);
+  }
+
   r.post('/messages/actions', wrap(async (req, res) => {
     const ids = (req.body.ids || []).map((x) => parseInt(x, 10)).filter(Boolean);
     const action = String(req.body.action || '');
     if (!ids.length) return res.json({ ok: true });
-    const rows = await db.many(
-      `SELECT m.id, m.uid, m.flags, m.account_id, m.folder_id, f.path, f.special_use
+    let rows = await db.many(
+      `SELECT m.id, m.uid, m.flags, m.account_id, m.folder_id, m.message_id, f.path, f.special_use
          FROM messages m JOIN folders f ON f.id = m.folder_id JOIN mail_accounts a ON a.id = m.account_id
         WHERE m.id = ANY($1::bigint[]) AND a.user_id = $2`, [ids, req.user.id]);
+    if (action === 'seen' || action === 'unseen') rows = rows.concat(await copiesOf(rows));
 
     let target = null;
     if (['move', 'copy'].includes(action)) target = await ownFolder(req.body.target, req.user.id);

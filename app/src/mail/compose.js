@@ -77,6 +77,24 @@ async function buildMail(body, user, ident) {
     headers: { 'User-Agent': 'Webmail' },
   };
 
+  // Eingebettete Bilder (z. B. Logo in der Signatur) als CID-Anhänge versenden –
+  // data:-URLs zeigen viele Mailprogramme (u. a. Gmail) nicht an
+  if (mail.html) {
+    let n = 0;
+    mail.html = mail.html.replace(
+      /(<img\b[^>]*?\ssrc\s*=\s*)(["'])data:(image\/(?:png|jpe?g|gif|webp));base64,([A-Za-z0-9+/=\s]+)\2/gi,
+      (m0, pre, q, type, b64) => {
+        n++;
+        const cid = `img${n}.${crypto.randomUUID()}@${domain}`;
+        const ext = type.split('/')[1].replace('jpeg', 'jpg');
+        mail.attachments.push({
+          cid, filename: `bild-${n}.${ext}`, contentType: type, contentDisposition: 'inline',
+          content: Buffer.from(b64.replace(/\s+/g, ''), 'base64'),
+        });
+        return `${pre}${q}cid:${cid}${q}`;
+      });
+  }
+
   for (const a of body.attachments || []) {
     if (!a || !a.data) continue;
     mail.attachments.push({
@@ -223,4 +241,4 @@ async function saveDraft(body, user) {
   return { ok: true, draftMessageId: mail.messageId };
 }
 
-module.exports = { send, saveDraft, testSmtp, findSpecialFolder, removeDraft, replyFolderFor };
+module.exports = { send, saveDraft, testSmtp, findSpecialFolder, removeDraft, replyFolderFor, buildMail };

@@ -1,6 +1,7 @@
 import { h, clear, icon, iconButton, toast, confirmDialog, fileSize, formatAddress, debounce, fileToBase64, fullDate, esc } from './ui.js';
 import { get, post, del } from './api.js';
 import { state, allIdentities, defaultIdentity, identityForMessage, findFolder } from './state.js';
+import { sanitizeRich } from './richtext.js';
 
 let panel = null;
 let cur = null; // aktueller Entwurfszustand
@@ -44,7 +45,7 @@ function textToHtml(text) {
 
 function signatureHtml(identity) {
   if (!identity || !identity.signature) return '';
-  const sig = /<[a-z][\s\S]*>/i.test(identity.signature) ? identity.signature : textToHtml(identity.signature);
+  const sig = /<[a-z][\s\S]*>/i.test(identity.signature) ? sanitizeRich(identity.signature) : textToHtml(identity.signature);
   return `<div class="wm-signature">-- <br>${sig}</div>`;
 }
 
@@ -136,6 +137,13 @@ export async function openCompose(opts = {}) {
     draft.html = (mode === 'reply' || mode === 'replyAll' || mode === 'forward')
       ? `<div><br></div>${sig}${quote}` : `<div><br></div>${sig}`;
   }
+  // „dirty“ merkt sich, seit wann ungespeicherte Änderungen bestehen (für das automatische Speichern)
+  let dirty = false;
+  Object.defineProperty(draft, 'dirty', {
+    get: () => dirty,
+    set: (v) => { if (v && !dirty) draft.dirtySince = Date.now(); if (!v) draft.dirtySince = null; dirty = !!v; },
+    enumerable: false, configurable: true,
+  });
   cur = draft;
   renderPanel();
 }
@@ -150,27 +158,122 @@ export function closeCompose(force) {
 
 // ====================================================================== Empfängerfeld mit Autovervollständigung
 
+/** Adressliste zerlegen: "Name <a@b>", a@b, "Nachname, Vorname" <a@b> – getrennt durch Komma oder Semikolon. */
+export function parseAddresses(str) {
+  const out = [];
+  let cur = '';
+  let quoted = false;
+  let angle = false;
+  for (const ch of String(str || '')) {
+    if (ch === '"') quoted = !quoted;
+    else if (ch === '<' && !quoted) angle = true;
+    else if (ch === '>' && !quoted) angle = false;
+    if ((ch === ',' || ch === ';') && !quoted && !angle) { out.push(cur); cur = ''; } else cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim()).filter(Boolean).map((x) => {
+    const m = x.match(/^(.*?)\s*<([^>]+)>\s*$/);
+    if (m) return { name: m[1].trim().replace(/^"(.*)"$/, '$1').trim(), address: m[2].trim() };
+    return { name: '', address: x.replace(/^mailto:/i, '') };
+  });
+}
+
+const EMAIL_RE = /^[^\s@<>(),;:"]+@[^\s@<>(),;:"]+\.[^\s@<>(),;:"]+$/;
+const quoteName = (n) => (/[",;<>@]/.test(n) ? `"${n.replace(/"/g, '')}"` : n);
+const addrToString = (a) => (a.name ? `${quoteName(a.name)} <${a.address}>` : a.address);
+
+// Laufender Drag-Vorgang einer Adresse zwischen den Feldern
+let rcptDrag = null;
+
 function recipientInput(name, value, placeholder) {
-  const input = h('input', { type: 'text', name, value, placeholder, autocomplete: 'off', spellcheck: 'false', class: 'rcpt-input' });
+  const chips = [];
+  const chipBox = h('span', { class: 'rcpt-chips' });
+  const input = h('input', { type: 'text', name: `${name}-typing`, placeholder, autocomplete: 'off', spellcheck: 'false', class: 'rcpt-input', 'aria-label': placeholder });
   const list = h('ul', { class: 'suggest', role: 'listbox', hidden: true });
+  const wrap = h('div', { class: 'rcpt', dataset: { field: name } }, chipBox, input, list);
   let items = [];
   let active = -1;
+  let initializing = true;
 
-  const segment = () => {
-    const v = input.value;
-    const pos = input.selectionStart ?? v.length;
-    const start = v.lastIndexOf(',', pos - 1) + 1;
-    return { start, text: v.slice(start, pos).trim() };
+  const changed = () => {
+    if (cur && !initializing) cur.dirty = true;
+    input.placeholder = chips.length ? '' : placeholder;
+    wrap.dispatchEvent(new Event('rcpt-change', { bubbles: true }));
   };
-  const choose = (item) => {
-    const v = input.value;
-    const { start } = segment();
-    const end = (() => { const i = v.indexOf(',', start); return i < 0 ? v.length : i + 1; })();
-    const before = v.slice(0, start).replace(/\s*$/, start ? ' ' : '');
-    const after = v.slice(end).replace(/^\s*/, '');
-    input.value = `${before}${formatAddress(item)}, ${after}`;
+  const has = (addr) => chips.some((c) => c.address.toLowerCase() === addr.toLowerCase());
+
+  function renderChips() {
+    clear(chipBox, chips.map((c, i) => {
+      const valid = EMAIL_RE.test(c.address);
+      const chip = h('span', {
+        class: `rcpt-chip${valid ? '' : ' invalid'}`, draggable: 'true', tabindex: '0',
+        title: valid ? `${addrToString(c)} – ziehen, um in ein anderes Feld zu verschieben; Doppelklick zum Bearbeiten` : `Ungültige Adresse: ${c.address}`,
+        onDragstart: (e) => {
+          rcptDrag = { addr: c, from: wrap };
+          e.dataTransfer.effectAllowed = 'move';
+          e.dataTransfer.setData('text/plain', addrToString(c));
+          chip.classList.add('dragging');
+          const panelEl = wrap.closest('.compose');
+          if (panelEl) panelEl.classList.add('rcpt-dragging');
+        },
+        onDragend: () => {
+          rcptDrag = null;
+          chip.classList.remove('dragging');
+          document.querySelectorAll('.compose.rcpt-dragging').forEach((x) => x.classList.remove('rcpt-dragging'));
+          document.querySelectorAll('.rcpt.drop-over').forEach((x) => x.classList.remove('drop-over'));
+        },
+        onDblclick: () => editChip(i),
+        onKeydown: (e) => {
+          if (e.key === 'Backspace' || e.key === 'Delete') { e.preventDefault(); removeAt(i); input.focus(); }
+          else if (e.key === 'Enter') { e.preventDefault(); editChip(i); }
+        },
+      },
+      c.name ? h('span', { class: 'rcpt-name' }, c.name) : null,
+      h('span', { class: 'rcpt-addr' }, c.address),
+      h('button', {
+        type: 'button', class: 'rcpt-x', tabindex: '-1', 'aria-label': `${c.name || c.address} entfernen`,
+        onClick: (e) => { e.stopPropagation(); removeAt(i); },
+      }, '×'));
+      return chip;
+    }));
+  }
+
+  function addAddresses(list2) {
+    let added = 0;
+    for (const a of list2) {
+      if (!a.address || has(a.address)) continue;
+      chips.push({ name: a.name || '', address: a.address });
+      added++;
+    }
+    if (added) { renderChips(); changed(); }
+    return added;
+  }
+  function removeAt(i) { chips.splice(i, 1); renderChips(); changed(); }
+  function removeAddr(addr) {
+    const i = chips.findIndex((c) => c.address.toLowerCase() === addr.toLowerCase());
+    if (i >= 0) removeAt(i);
+  }
+  function editChip(i) {
+    const c = chips[i];
+    removeAt(i);
+    commitTyped();
+    input.value = addrToString(c);
+    input.focus();
+    input.select();
+  }
+  function commitTyped() {
+    const v = input.value.trim();
+    if (!v) return false;
+    input.value = '';
+    addAddresses(parseAddresses(v));
     list.hidden = true;
-    input.dispatchEvent(new Event('input'));
+    return true;
+  }
+
+  const choose = (item) => {
+    input.value = '';
+    addAddresses([{ name: item.name, address: item.address }]);
+    list.hidden = true;
     input.focus();
   };
   const renderList = () => {
@@ -181,30 +284,144 @@ function recipientInput(name, value, placeholder) {
     list.hidden = !items.length;
   };
   const search = debounce(async () => {
-    const { text } = segment();
+    const text = input.value.trim();
     if (text.length < 2) { items = []; renderList(); return; }
     try {
       const r = await get('/addresses', { q: text });
-      items = r.results;
+      if (input.value.trim() !== text) return;
+      items = r.results.filter((x) => !has(x.address));
       active = items.length ? 0 : -1;
       renderList();
     } catch { /* ignore */ }
   }, 200);
-  input.addEventListener('input', () => { if (cur) cur.dirty = true; search(); });
-  input.addEventListener('keydown', (e) => {
-    if (list.hidden) return;
-    if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(items.length - 1, active + 1); renderList(); }
-    else if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(0, active - 1); renderList(); }
-    else if ((e.key === 'Enter' || e.key === 'Tab') && items[active]) { e.preventDefault(); choose(items[active]); }
-    else if (e.key === 'Escape') { list.hidden = true; e.stopPropagation(); }
+
+  input.addEventListener('input', () => {
+    // Komma/Semikolon schliesst eine Adresse ab (auch beim Einfügen mehrerer Adressen)
+    if (/[,;]/.test(input.value)) {
+      const parts = parseAddresses(input.value);
+      const endsWithSep = /[,;]\s*$/.test(input.value);
+      const rest = endsWithSep ? null : parts.pop();
+      addAddresses(parts);
+      input.value = rest ? addrToString(rest) : '';
+    }
+    if (cur) cur.dirty = true;
+    search();
   });
-  input.addEventListener('blur', () => setTimeout(() => { list.hidden = true; }, 150));
-  return h('div', { class: 'rcpt' }, input, list);
+  input.addEventListener('keydown', (e) => {
+    if (!list.hidden && items.length) {
+      if (e.key === 'ArrowDown') { e.preventDefault(); active = Math.min(items.length - 1, active + 1); renderList(); return; }
+      if (e.key === 'ArrowUp') { e.preventDefault(); active = Math.max(0, active - 1); renderList(); return; }
+      if ((e.key === 'Enter' || e.key === 'Tab') && items[active]) { e.preventDefault(); choose(items[active]); return; }
+      if (e.key === 'Escape') { list.hidden = true; e.stopPropagation(); return; }
+    }
+    if (e.key === 'Enter' && input.value.trim()) { e.preventDefault(); commitTyped(); }
+    else if (e.key === 'Tab' && input.value.trim()) { commitTyped(); }
+    else if (e.key === 'Backspace' && !input.value && chips.length) { e.preventDefault(); removeAt(chips.length - 1); }
+  });
+  input.addEventListener('blur', () => setTimeout(() => { list.hidden = true; commitTyped(); }, 150));
+  wrap.addEventListener('click', (e) => { if (e.target === wrap || e.target === chipBox) input.focus(); });
+
+  // Ablegen einer gezogenen Adresse
+  wrap.addEventListener('dragover', (e) => {
+    if (!rcptDrag || rcptDrag.from === wrap) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'move';
+    wrap.classList.add('drop-over');
+  });
+  wrap.addEventListener('dragleave', (e) => { if (!wrap.contains(e.relatedTarget)) wrap.classList.remove('drop-over'); });
+  wrap.addEventListener('drop', (e) => {
+    wrap.classList.remove('drop-over');
+    if (!rcptDrag || rcptDrag.from === wrap) return;
+    e.preventDefault();
+    const { addr, from } = rcptDrag;
+    addAddresses([addr]);
+    from.rcptRemove(addr.address);
+    const row = wrap.closest('.c-row');
+    if (row && row.hidden) {
+      row.hidden = false;
+      // zugehörigen „Cc“/„Bcc“-Knopf entfernen
+      const label = row.querySelector('label') && row.querySelector('label').textContent;
+      const panelEl = wrap.closest('.compose');
+      if (panelEl && label) panelEl.querySelectorAll('.c-row-btns button').forEach((b) => { if (b.textContent === label) b.remove(); });
+    }
+  });
+
+  // Schnittstelle für das Schreibfenster
+  wrap.rcptValue = () => [...chips, ...parseAddresses(input.value)].map(addrToString).join(', ');
+  wrap.rcptFocus = () => input.focus();
+  wrap.rcptRemove = removeAddr;
+  wrap.rcptEmpty = () => !chips.length && !input.value.trim();
+
+  addAddresses(parseAddresses(value));
+  initializing = false;
+  return wrap;
+}
+
+// ====================================================================== Grösse des Schreibfensters
+
+const SIZE_KEY = 'wm.composeSize';
+const MIN_W = 420;
+const MIN_H = 320;
+
+function loadSize() {
+  try { return JSON.parse(localStorage.getItem(SIZE_KEY) || 'null'); } catch { return null; }
+}
+
+function applySize(el, size) {
+  if (size && size.w && size.h) {
+    el.style.setProperty('--compose-w', `${Math.round(size.w)}px`);
+    el.style.setProperty('--compose-h', `${Math.round(size.h)}px`);
+  } else {
+    el.style.removeProperty('--compose-w');
+    el.style.removeProperty('--compose-h');
+  }
+}
+
+/** Ziehbare Ränder links, oben und Ecke oben links (das Fenster ist unten rechts verankert). */
+function setupResize(el) {
+  applySize(el, loadSize());
+  try { if (localStorage.getItem('wm.composeMax') === '1') el.classList.add('max'); } catch { /* egal */ }
+  for (const [dir, cursor, label] of [['l', 'ew-resize', 'Breite ändern'], ['t', 'ns-resize', 'Höhe ändern'], ['tl', 'nwse-resize', 'Grösse ändern']]) {
+    const handle = h('div', { class: `c-resize c-resize-${dir}`, title: `${label} – Doppelklick: Standardgrösse`, 'aria-hidden': 'true' });
+    handle.addEventListener('pointerdown', (e) => {
+      if (e.button !== 0 || el.classList.contains('max') || el.classList.contains('minimized')) return;
+      e.preventDefault();
+      const r = el.getBoundingClientRect();
+      const start = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+      const maxW = window.innerWidth - 24;
+      const maxH = window.innerHeight - 16;
+      handle.setPointerCapture(e.pointerId);
+      document.body.classList.add('c-resizing');
+      document.body.style.setProperty('--c-cursor', cursor);
+      let size = { w: start.w, h: start.h };
+      const move = (ev) => {
+        if (dir !== 't') size.w = Math.max(MIN_W, Math.min(maxW, start.w - (ev.clientX - start.x)));
+        if (dir !== 'l') size.h = Math.max(MIN_H, Math.min(maxH, start.h - (ev.clientY - start.y)));
+        applySize(el, size);
+      };
+      const up = () => {
+        handle.removeEventListener('pointermove', move);
+        handle.removeEventListener('pointerup', up);
+        handle.removeEventListener('pointercancel', up);
+        document.body.classList.remove('c-resizing');
+        try { localStorage.setItem(SIZE_KEY, JSON.stringify(size)); } catch { /* egal */ }
+      };
+      handle.addEventListener('pointermove', move);
+      handle.addEventListener('pointerup', up);
+      handle.addEventListener('pointercancel', up);
+    });
+    handle.addEventListener('dblclick', () => {
+      try { localStorage.removeItem(SIZE_KEY); } catch { /* egal */ }
+      applySize(el, null);
+    });
+    el.appendChild(handle);
+  }
 }
 
 // ====================================================================== Panel
 
 let autosaveTimer = null;
+let hideHandler = null;
 
 function renderPanel() {
   if (panel) panel.remove();
@@ -289,9 +506,9 @@ function renderPanel() {
 
   const collect = () => ({
     identityId: Number(fromSel.value),
-    to: toIn.querySelector('input').value,
-    cc: ccIn.querySelector('input').value,
-    bcc: bccIn.querySelector('input').value,
+    to: toIn.rcptValue(),
+    cc: ccIn.rcptValue(),
+    bcc: bccIn.rcptValue(),
     subject: subject.value,
     html: editor.innerHTML,
     attachments: d.attachments.map(({ filename, contentType, data }) => ({ filename, contentType, data })),
@@ -323,15 +540,28 @@ function renderPanel() {
   };
   sendBtn.addEventListener('click', send);
 
+  let saving = false;
   const saveDraft = async (silent) => {
+    if (saving) return;
+    saving = true;
+    const changedAt = d.dirtySince;
     try {
+      status.classList.remove('error');
+      if (silent) status.textContent = 'Entwurf wird gespeichert …';
       const r = await post('/drafts', collect());
       d.draftMessageId = r.draftMessageId;
-      d.dirty = false;
-      status.textContent = `Entwurf gespeichert ${new Date().toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit' })}`;
+      // nur zurücksetzen, wenn während des Speicherns nichts Neues geändert wurde
+      if (d.dirtySince === changedAt) d.dirty = false;
+      const t = new Date().toLocaleTimeString('de-CH', { hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+      status.textContent = `Entwurf ${silent ? 'automatisch ' : ''}gespeichert ${t}`;
       if (!silent) toast('Entwurf gespeichert');
     } catch (err) {
+      status.textContent = `Entwurf nicht gespeichert: ${err.message}`;
+      status.classList.add('error');
+      if (d.dirty) d.dirtySince = Date.now(); // in einer Minute erneut versuchen
       if (!silent) toast(err.message, 'error');
+    } finally {
+      saving = false;
     }
   };
 
@@ -351,7 +581,10 @@ function renderPanel() {
       title,
       h('div', { class: 'c-head-btns' },
         iconButton('chevronDown', 'Minimieren', () => panel.classList.toggle('minimized'), { class: 'tiny' }),
-        iconButton('all', 'Maximieren', () => panel.classList.toggle('max'), { class: 'tiny hide-mobile' }),
+        iconButton('all', 'Maximieren / Normalgrösse', () => {
+          const on = panel.classList.toggle('max');
+          try { localStorage.setItem('wm.composeMax', on ? '1' : '0'); } catch { /* egal */ }
+        }, { class: 'tiny hide-mobile' }),
         iconButton('close', 'Schließen (als Entwurf behalten)', async () => {
           if (d.dirty) await saveDraft(true);
           closeCompose();
@@ -360,8 +593,8 @@ function renderPanel() {
       h('div', { class: 'c-row' }, h('label', {}, 'Von'), fromSel),
       h('div', { class: 'c-row' }, h('label', {}, 'An'), toIn,
         h('div', { class: 'c-row-btns' },
-          h('button', { class: 'link-btn', type: 'button', onClick: (e) => { ccRow.hidden = false; e.target.remove(); ccIn.querySelector('input').focus(); } }, 'Cc'),
-          h('button', { class: 'link-btn', type: 'button', onClick: (e) => { bccRow.hidden = false; e.target.remove(); bccIn.querySelector('input').focus(); } }, 'Bcc'))),
+          h('button', { class: 'link-btn', type: 'button', onClick: (e) => { ccRow.hidden = false; e.target.remove(); ccIn.rcptFocus(); } }, 'Cc'),
+          h('button', { class: 'link-btn', type: 'button', onClick: (e) => { bccRow.hidden = false; e.target.remove(); bccIn.rcptFocus(); } }, 'Bcc'))),
       ccRow, bccRow,
       h('div', { class: 'c-row' }, subject),
       toolbar,
@@ -392,14 +625,24 @@ function renderPanel() {
     if (e.key === 'Escape' && !e.target.closest('.rcpt')) panel.classList.add('minimized');
   });
 
+  setupResize(panel);
   document.getElementById('compose-root').appendChild(panel);
+  // Automatisch speichern: 1 Minute nach der ersten ungespeicherten Änderung
+  const AUTOSAVE_MS = 60000;
+  const worthSaving = () => !toIn.rcptEmpty() || subject.value.trim() || editor.textContent.trim().length > 20 || d.attachments.length;
   clearInterval(autosaveTimer);
   autosaveTimer = setInterval(() => {
-    if (cur === d && d.dirty && (toIn.querySelector('input').value || subject.value || editor.textContent.trim().length > 20)) saveDraft(true);
-  }, 60000);
+    if (cur !== d || !d.dirty || !d.dirtySince || !worthSaving()) return;
+    if (Date.now() - d.dirtySince >= AUTOSAVE_MS) saveDraft(true);
+  }, 5000);
+  // Tab wechseln/schliessen: sofort sichern
+  const onHide = () => { if (document.visibilityState === 'hidden' && cur === d && d.dirty && worthSaving()) saveDraft(true); };
+  document.removeEventListener('visibilitychange', hideHandler);
+  hideHandler = onHide;
+  document.addEventListener('visibilitychange', hideHandler);
 
   setTimeout(() => {
-    if (!d.to) toIn.querySelector('input').focus();
+    if (!d.to) toIn.rcptFocus();
     else {
       editor.focus();
       const r = document.createRange();

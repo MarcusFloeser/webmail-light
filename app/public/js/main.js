@@ -34,7 +34,16 @@ function renderLogin() {
   let mode = 'login';
   const err = h('p', { class: 'form-error', role: 'alert' });
   const prefs = loadLoginPrefs();
-  const user = h('input', { name: 'username', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: 'false', value: prefs.username || '' });
+  const imapLogin = state.config.authMode === 'imap';
+  // Früher gemerkter Benutzername ohne @ → zur E-Mail-Adresse ergänzen bzw. nicht vorausfüllen
+  if (imapLogin && prefs.username && !prefs.username.includes('@')) {
+    prefs.username = state.config.defaultDomain ? `${prefs.username}@${state.config.defaultDomain}` : '';
+  }
+  const user = h('input', {
+    name: imapLogin ? 'email' : 'username', autocomplete: imapLogin ? 'email' : 'username',
+    required: true, autocapitalize: 'none', spellcheck: 'false', value: prefs.username || '',
+    ...(imapLogin ? { type: 'email', inputmode: 'email', placeholder: 'E-Mail-Adresse' } : {}),
+  });
   const remember = h('input', { type: 'checkbox', name: 'remember', checked: prefs.remember !== false });
   const pass = h('input', { name: 'password', type: 'password', autocomplete: 'current-password', required: true });
   const display = h('input', { name: 'displayName', autocomplete: 'name' });
@@ -51,7 +60,8 @@ function renderLogin() {
   }, 'Neues Konto erstellen') : null;
 
   const form = h('form', {
-    class: 'login-card', onSubmit: async (e) => {
+    // Prüfung übernimmt der Server (lokaler Notfall-Admin darf sich mit Benutzernamen anmelden)
+    class: 'login-card', novalidate: true, onSubmit: async (e) => {
       e.preventDefault();
       err.textContent = '';
       submit.disabled = true;
@@ -73,10 +83,8 @@ function renderLogin() {
     },
   },
   h('div', { class: 'login-brand' }, icon('mail', 28), h('span', {}, 'Webmail')),
-  h('label', { class: 'field' }, h('span', {}, state.config.authMode === 'imap'
-    ? (state.config.defaultDomain ? `E-Mail-Adresse oder Benutzername (@${state.config.defaultDomain})` : 'E-Mail-Adresse / Benutzername')
-    : 'Benutzername'), user),
-  state.config.authMode === 'imap' ? h('p', { class: 'muted small login-hint' }, 'Melde dich mit den Zugangsdaten deines E-Mail-Postfachs an.') : null,
+  h('label', { class: 'field' }, h('span', {}, state.config.authMode === 'imap' ? 'E-Mail-Adresse' : 'Benutzername'), user),
+  state.config.authMode === 'imap' ? h('p', { class: 'muted small login-hint' }, 'Melde dich mit deiner E-Mail-Adresse und dem Passwort deines Postfachs an.') : null,
   displayField,
   h('label', { class: 'field' }, h('span', {}, 'Passwort'), pass),
   h('label', { class: 'check remember-check', title: 'Auf gemeinsam genutzten Geräten nicht aktivieren' },
@@ -111,7 +119,7 @@ function renderForgot(prefill) {
     return;
   }
   const err = h('p', { class: 'form-error', role: 'alert' });
-  const login = h('input', { name: 'login', value: prefill || '', autocomplete: 'username', required: true, autocapitalize: 'none', spellcheck: 'false' });
+  const login = h('input', { name: 'email', type: 'email', value: prefill && prefill.includes('@') ? prefill : '', autocomplete: 'email', required: true, autocapitalize: 'none', spellcheck: 'false', inputmode: 'email', placeholder: 'E-Mail-Adresse' });
   const submit = h('button', { class: 'btn btn-primary btn-block', type: 'submit' }, 'Link anfordern');
   const form = h('form', {
     class: 'login-card', onSubmit: async (e) => {
@@ -130,7 +138,7 @@ function renderForgot(prefill) {
   brand,
   h('h2', {}, 'Passwort vergessen'),
   h('p', { class: 'muted small' }, 'Gib deinen Benutzernamen oder deine E-Mail-Adresse ein. Du erhältst einen Link zum Festlegen eines neuen Passworts an deine hinterlegte Wiederherstellungs-Adresse.'),
-  h('label', { class: 'field' }, h('span', {}, 'Benutzername / E-Mail-Adresse'), login),
+  h('label', { class: 'field' }, h('span', {}, 'E-Mail-Adresse'), login),
   err, submit, back);
   clear(root, form);
   setTimeout(() => login.focus(), 50);
@@ -467,6 +475,7 @@ function notifyNew(msg) {
 
 async function startApp() {
   $('#login').hidden = true;
+  clear($('#login')); // Anmeldeformular (inkl. Passwortfeld) aus der Seite entfernen
   $('#shell').hidden = false;
   await loadAccounts();
   appearance.applyFromUser(state.user);

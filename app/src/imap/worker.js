@@ -28,6 +28,7 @@ const FETCH_QUERY = {
 const FOLDER_ORDER = { '\\Inbox': 0, '\\Sent': 1, '\\Drafts': 2, '\\Archive': 3, null: 4, '\\All': 6, '\\Junk': 7, '\\Trash': 8 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const QUOTA_INTERVAL_MS = 30 * 60000;
 
 function imapOptions(acc) {
   return {
@@ -204,6 +205,11 @@ class AccountWorker {
         }
       }
       this.initialDone = true;
+      // Mailbox-Grösse für die Admin-Übersicht (höchstens alle 30 Minuten)
+      if (!this.quotaAt || Date.now() - this.quotaAt > QUOTA_INTERVAL_MS) {
+        this.quotaAt = Date.now();
+        this.updateQuota(c).catch((err) => this.log('Quota:', err.message));
+      }
       if (first || this.status !== 'ok') await this.setStatus('ok');
       else db.query('UPDATE mail_accounts SET last_sync = now() WHERE id = $1', [this.id]).catch(() => {});
     } catch (err) {
@@ -211,6 +217,41 @@ class AccountWorker {
       const msg = friendlyError(err, { kind: 'imap', port: this.account.imap_port, security: this.account.imap_security });
       await this.setStatus('error', msg);
     }
+  }
+
+  /**
+   * Belegten Speicher ermitteln: bevorzugt über IMAP QUOTA (z. B. Dovecot mit Quota-Plugin),
+   * sonst Schätzung aus dem lokalen Index (Ø Grösse je Ordner × Anzahl Nachrichten laut Server).
+   */
+  async updateQuota(c) {
+    let used = null;
+    let limit = null;
+    let source = null;
+    try {
+      const q = typeof c.getQuota === 'function' ? await c.getQuota('INBOX') : null;
+      const st = q && q.storage;
+      const usage = st ? (st.usage ?? st.used) : undefined; // imapflow: Bytes
+      if (st && usage !== undefined && usage !== null && Number.isFinite(Number(usage))) {
+        used = Number(usage);
+        limit = Number.isFinite(Number(q.storage.limit)) && Number(q.storage.limit) > 0 ? Number(q.storage.limit) : null;
+        source = 'quota';
+      }
+    } catch (err) {
+      this.log('QUOTA nicht verfügbar:', err.message);
+    }
+    if (source === null) {
+      const r = await db.one(
+        `SELECT coalesce(sum(CASE WHEN x.n > 0 THEN x.bytes::numeric / x.n * greatest(x.total, x.n) ELSE 0 END), 0)::bigint AS est
+           FROM (SELECT f.id, f.total, count(m.id) AS n, coalesce(sum(m.size), 0) AS bytes
+                   FROM folders f LEFT JOIN messages m ON m.folder_id = f.id
+                  WHERE f.account_id = $1 GROUP BY f.id, f.total) x`, [this.id]);
+      used = Number(r ? r.est : 0);
+      source = 'estimate';
+    }
+    await db.query(
+      `UPDATE mail_accounts SET quota_used = $2, quota_limit = $3, quota_source = $4, quota_checked_at = now() WHERE id = $1`,
+      [this.id, used, limit, source]);
+    return { used, limit, source };
   }
 
   async syncFolderList(c) {
