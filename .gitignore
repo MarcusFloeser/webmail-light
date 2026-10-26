@@ -1,0 +1,26 @@
+# Umgebungsvariablen und Geheimnisse
+.env
+.env.*
+!.env.example
+
+# Zugangsdaten und Schlüssel
+*.pem
+*.key
+secrets/
+
+# Logs
+*.log
+logs/
+
+# Temporäre Dateien
+tmp/
+temp/
+*.tmp
+
+# Editor-Dateien
+.vscode/
+.idea/
+
+# Betriebssystem
+.DS_Store
+Thumbs.db

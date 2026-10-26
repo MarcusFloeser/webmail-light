@@ -82,7 +82,7 @@ export function apply(appearance) {
   root.classList.toggle('bgx-image', !!image);
   if (!custom) {
     for (const p of ['--bg', '--bg-solid', '--bg-image', '--surface']) root.style.removeProperty(p);
-    root.classList.remove('bgx-dark', 'bgx-light', 'bgx-sdark', 'bgx-slight');
+    root.classList.remove('bgx-dark', 'bgx-light', 'bgx-sdark', 'bgx-slight', 'content-light');
     return;
   }
   // Grundfarbe; im dunklen Farbschema wird eine helle Wahl stark abgedunkelt
@@ -118,6 +118,8 @@ export function apply(appearance) {
   // Weisse oder dunkle Schrift – je nachdem, was mehr Kontrast hat (WCAG); leichte Bevorzugung
   // von Weiss, weil Schrift auf Bildern zusätzlich einen Schatten bekommt
   const darkBg = prefersWhite(luminance(solid), !!image);
+  // Dunkles Farbschema + helle eigene Farbe: Inhalte hell, nur die Kopfleiste dunkel
+  root.classList.toggle('content-light', dark && !!color && !prefersWhite(luminance(base), false));
   root.classList.toggle('bgx-dark', darkBg);
   root.classList.toggle('bgx-light', !darkBg);
 }

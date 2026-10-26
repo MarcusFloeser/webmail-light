@@ -850,14 +850,24 @@ body.agenda-view.agenda-open .agenda { display: flex; }
 
 /* ===================================================================== Verschiebbare Spaltentrenner */
 .splitter { flex: none; width: 0; position: relative; z-index: 15; align-self: stretch; outline: none; }
-.splitter::before { content: ""; position: absolute; top: 0; bottom: 0; left: -5px; width: 10px; cursor: col-resize; }
-.splitter::after {
-  content: ""; position: absolute; top: 0; bottom: 0; left: -1.5px; width: 3px; border-radius: 2px;
-  background: var(--accent); opacity: 0; transition: opacity .12s; pointer-events: none;
+.splitter::before {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -5px; width: 10px; cursor: col-resize; z-index: 1;
+  /* Griff: drei Punkte in der Mitte, mittelgrau – auf hellen und dunklen Farben sichtbar */
+  background:
+    radial-gradient(circle, rgba(128, 128, 128, .85) 1.4px, transparent 1.9px) 50% calc(50% - 7px) / 6px 6px no-repeat,
+    radial-gradient(circle, rgba(128, 128, 128, .85) 1.4px, transparent 1.9px) 50% 50% / 6px 6px no-repeat,
+    radial-gradient(circle, rgba(128, 128, 128, .85) 1.4px, transparent 1.9px) 50% calc(50% + 7px) / 6px 6px no-repeat;
 }
-.splitter:hover::after { opacity: .45; transition-delay: .15s; }
-.splitter.active::after { opacity: .8; transition-delay: 0s; }
-.splitter:focus-visible::after { opacity: .8; transition-delay: 0s; }
+/* Feine zweifarbige Linie (dunkel + hell) – hebt sich von jeder Hintergrundfarbe leicht ab */
+.splitter::after {
+  content: ""; position: absolute; top: 0; bottom: 0; left: -1px; width: 1px; border-radius: 2px;
+  background: rgba(0, 0, 0, .16); box-shadow: 1px 0 0 rgba(255, 255, 255, .18);
+  transition: background-color .12s, width .12s, left .12s, box-shadow .12s; pointer-events: none;
+}
+.splitter:hover::after { background: var(--accent); width: 3px; left: -1.5px; box-shadow: none; opacity: .55; transition-delay: .1s; }
+.splitter.active::after { background: var(--accent); width: 3px; left: -1.5px; box-shadow: none; opacity: .9; transition-delay: 0s; }
+.splitter:focus-visible::after { background: var(--accent); width: 3px; left: -1.5px; box-shadow: none; opacity: .9; }
+.splitter:hover::before, .splitter.active::before { opacity: .4; }
 body.resizing, body.resizing * { cursor: col-resize !important; user-select: none !important; }
 body.resizing iframe { pointer-events: none; }
 body:not(.agenda-view) .splitter[data-key="agenda"], body:not(.agenda-open) .splitter[data-key="agenda"] { display: none; }
@@ -888,3 +898,64 @@ body.no-sidebar .compose.max { left: 24px; }
 .bgx-slight .search-input, .bgx-slight .settings-view input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),
 .bgx-slight .settings-view select, .bgx-slight .settings-view textarea { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .1); }
 .bgx-slight .seg { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
+
+/* Farbschema Dunkel mit eigener heller Farbe: nur die Kopfleiste bleibt dunkel,
+   alles andere (Karten, Leisten, Dialoge) folgt der gewählten Farbe */
+:root.bgx.content-light {
+  --bg: #f6f7f9;
+  --panel: #ffffff;
+  --panel-2: #f1f3f6;
+  --hover: #eef1f5;
+  --active: #e3eafb;
+  --border: #e2e5ea;
+  --border-strong: #cfd4dc;
+  --text: #1c2027;
+  --text-2: #4d5562;
+  --muted: #7a8391;
+  --accent: #2f5fd0;
+  --accent-hover: #244fb5;
+  --accent-soft: #e6edfc;
+  --accent-text: #ffffff;
+  --danger: #c43d3d;
+  --danger-soft: #fbeaea;
+  --ok: #24855a;
+  --ok-soft: #e5f4ec;
+  --warn: #a86a00;
+  --warn-soft: #fdf3dc;
+  --star: #e2a400;
+  --shadow: 0 1px 2px rgba(16, 24, 40, .06), 0 1px 3px rgba(16, 24, 40, .08);
+  --shadow-lg: 0 12px 32px rgba(16, 24, 40, .18), 0 2px 6px rgba(16, 24, 40, .08);
+  --radius: 10px;
+  --radius-sm: 6px;
+  color-scheme: light;
+
+  color-scheme: light;
+}
+:root.bgx.content-light .appbar {
+    --bg: #16181d;
+    --panel: #1d2026;
+    --panel-2: #23272e;
+    --hover: #262a32;
+    --active: #24324f;
+    --border: #2d323b;
+    --border-strong: #3a404b;
+    --text: #e6e8ec;
+    --text-2: #b4bac4;
+    --muted: #8a92a0;
+    --accent: #6b93f0;
+    --accent-hover: #86a6f3;
+    --accent-soft: #24324f;
+    --accent-text: #0e1320;
+    --danger: #ef6b6b;
+    --danger-soft: #3a2224;
+    --ok: #4cc38a;
+    --ok-soft: #1c3329;
+    --warn: #e5b04a;
+    --warn-soft: #3a3020;
+    --shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    --shadow-lg: 0 12px 32px rgba(0, 0, 0, .5);
+    color-scheme: dark;
+  
+  color-scheme: dark;
+  background: var(--panel); color: var(--text);
+}
