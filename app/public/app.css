@@ -719,7 +719,11 @@ body.agenda-view.agenda-open .agenda { display: flex; }
 .bgx-sdark .contact-detail-pane,
 .bgx-sdark .cal-side,
 .bgx-sdark .cal-main,
-.bgx-sdark .settings-view {
+.bgx-sdark .settings-view,
+.bgx-slight .msg,
+.bgx-slight .reader-toolbar,
+.bgx-sdark .msg,
+.bgx-sdark .reader-toolbar {
   background: var(--surface); border-right-color: transparent;
 }
 .bgx-image.bgx-slight .list-pane,
@@ -733,7 +737,11 @@ body.agenda-view.agenda-open .agenda { display: flex; }
 .bgx-image.bgx-sdark .contact-detail-pane,
 .bgx-image.bgx-sdark .cal-side,
 .bgx-image.bgx-sdark .cal-main,
-.bgx-image.bgx-sdark .settings-view {
+.bgx-image.bgx-sdark .settings-view,
+.bgx-image.bgx-slight .msg,
+.bgx-image.bgx-slight .reader-toolbar,
+.bgx-image.bgx-sdark .msg,
+.bgx-image.bgx-sdark .reader-toolbar {
   -webkit-backdrop-filter: blur(14px) saturate(1.15); backdrop-filter: blur(14px) saturate(1.15);
 }
 .bgx-slight .list-pane,
@@ -741,7 +749,9 @@ body.agenda-view.agenda-open .agenda { display: flex; }
 .bgx-slight .contact-detail-pane,
 .bgx-slight .cal-side,
 .bgx-slight .cal-main,
-.bgx-slight .settings-view {
+.bgx-slight .settings-view,
+.bgx-slight .msg,
+.bgx-slight .reader-toolbar {
   --panel: rgba(255, 255, 255, .55); --panel-2: rgba(255, 255, 255, .6);
   --text: #1c2027; --text-2: #39404b; --muted: #5b6370;
   --hover: rgba(0, 0, 0, .05); --active: rgba(0, 0, 0, .09); --border: rgba(0, 0, 0, .1); --border-strong: rgba(0, 0, 0, .2);
@@ -754,7 +764,9 @@ body.agenda-view.agenda-open .agenda { display: flex; }
 .bgx-sdark .contact-detail-pane,
 .bgx-sdark .cal-side,
 .bgx-sdark .cal-main,
-.bgx-sdark .settings-view {
+.bgx-sdark .settings-view,
+.bgx-sdark .msg,
+.bgx-sdark .reader-toolbar {
   --panel: rgba(255, 255, 255, .07); --panel-2: rgba(255, 255, 255, .12);
   --text: #f4f6f9; --text-2: rgba(255, 255, 255, .86); --muted: rgba(255, 255, 255, .66);
   --hover: rgba(255, 255, 255, .08); --active: rgba(255, 255, 255, .16); --border: rgba(255, 255, 255, .14); --border-strong: rgba(255, 255, 255, .28);
@@ -892,9 +904,9 @@ body.no-sidebar .compose.max { left: 24px; }
 
 /* Eingabeelemente (Kästchen, Felder) passend zur Fläche – unabhängig vom Farbschema */
 .bgx-light .sidebar, .bgx-light .agenda-head,
-.bgx-slight .list-pane, .bgx-slight .contact-col, .bgx-slight .contact-detail-pane, .bgx-slight .cal-side, .bgx-slight .cal-main, .bgx-slight .settings-view { color-scheme: light; }
+.bgx-slight .list-pane, .bgx-slight .contact-col, .bgx-slight .contact-detail-pane, .bgx-slight .cal-side, .bgx-slight .cal-main, .bgx-slight .settings-view, .bgx-slight .msg, .bgx-slight .reader-toolbar { color-scheme: light; }
 .bgx-dark .sidebar, .bgx-dark .agenda-head,
-.bgx-sdark .list-pane, .bgx-sdark .contact-col, .bgx-sdark .contact-detail-pane, .bgx-sdark .cal-side, .bgx-sdark .cal-main, .bgx-sdark .settings-view { color-scheme: dark; }
+.bgx-sdark .list-pane, .bgx-sdark .contact-col, .bgx-sdark .contact-detail-pane, .bgx-sdark .cal-side, .bgx-sdark .cal-main, .bgx-sdark .settings-view, .bgx-sdark .msg, .bgx-sdark .reader-toolbar { color-scheme: dark; }
 .bgx-slight .search-input, .bgx-slight .settings-view input:not([type=checkbox]):not([type=radio]):not([type=range]):not([type=color]),
 .bgx-slight .settings-view select, .bgx-slight .settings-view textarea { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .1); }
 .bgx-slight .seg { box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .06); }
@@ -959,3 +971,7 @@ body.no-sidebar .compose.max { left: 24px; }
   color-scheme: dark;
   background: var(--panel); color: var(--text);
 }
+
+/* Mail-Karten in der gewählten Farbe: zarte Kontur statt Schatten-Kante */
+.bgx-slight .msg { border-color: rgba(0, 0, 0, .1); }
+.bgx-sdark .msg { border-color: rgba(255, 255, 255, .14); }

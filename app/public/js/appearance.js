@@ -8,6 +8,7 @@ export const DEFAULT_VEIL = 35;
 
 const darkQuery = window.matchMedia ? window.matchMedia('(prefers-color-scheme: dark)') : null;
 let current = null;
+let mailCanvas = '#ffffff'; // Hintergrund im Inhalt von HTML-Mails
 
 export const PRESETS = [
   [null, 'Standard'],
@@ -82,6 +83,8 @@ export function apply(appearance) {
   root.classList.toggle('bgx-image', !!image);
   if (!custom) {
     for (const p of ['--bg', '--bg-solid', '--bg-image', '--surface']) root.style.removeProperty(p);
+    mailCanvas = '#ffffff';
+    window.dispatchEvent(new CustomEvent('wm-appearance'));
     root.classList.remove('bgx-dark', 'bgx-light', 'bgx-sdark', 'bgx-slight', 'content-light');
     return;
   }
@@ -113,6 +116,9 @@ export function apply(appearance) {
     root.style.setProperty('--surface', rgbToHex(surface));
   }
   const sDark = prefersWhite(luminance(surfaceSeen), false);
+  // HTML-Mails: bei heller Fläche deren Farbe, bei dunkler weiss (Mails geben meist dunkle Schrift vor)
+  mailCanvas = current.listGlass && !sDark ? rgbToHex(surfaceSeen) : '#ffffff';
+  window.dispatchEvent(new CustomEvent('wm-appearance'));
   root.classList.toggle('bgx-sdark', current.listGlass && sDark);
   root.classList.toggle('bgx-slight', current.listGlass && !sDark);
   // Weisse oder dunkle Schrift – je nachdem, was mehr Kontrast hat (WCAG); leichte Bevorzugung
@@ -130,6 +136,9 @@ function updateThemeColor(dark) {
     else m.setAttribute('content', dark ? DEFAULT_DARK : DEFAULT_LIGHT);
   }
 }
+
+/** Hintergrundfarbe für den Inhalt von HTML-Mails */
+export function mailBackground() { return mailCanvas; }
 
 export function applyFromUser(user) {
   apply(user && user.settings ? user.settings.appearance : null);

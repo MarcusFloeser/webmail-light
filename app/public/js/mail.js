@@ -6,6 +6,7 @@ import { get, post, patch, del } from './api.js';
 import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts } from './state.js';
 import * as compose from './compose.js';
 import { printMessages } from './print.js';
+import { mailBackground } from './appearance.js';
 
 const PAGE = 50;
 
@@ -733,13 +734,23 @@ function fillBody(container, m, p, forceRemote = false) {
   }
 }
 
+// Offene HTML-Mails an eine geänderte Hintergrundfarbe anpassen
+window.addEventListener('wm-appearance', () => {
+  for (const f of document.querySelectorAll('iframe.mail-frame')) {
+    try {
+      const d = f.contentDocument;
+      if (d && d.documentElement) { d.documentElement.style.background = mailBackground(); d.body.style.background = mailBackground(); }
+    } catch { /* ignore */ }
+  }
+});
+
 function htmlFrame(html, allowRemote) {
   const csp = `default-src 'none'; style-src 'unsafe-inline' ${allowRemote ? 'https: http:' : ''}; img-src data: blob: ${allowRemote ? 'https: http:' : ''}; font-src data: ${allowRemote ? 'https:' : ''}`;
   const doc = `<!doctype html><html><head><meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy" content="${csp}">
 <base target="_blank">
 <style>
-html,body{margin:0;padding:0;background:#fff;color:#1f2328}
+html,body{margin:0;padding:0;background:${mailBackground()};color:#1f2328}
 body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:2px 2px 8px;word-wrap:break-word;overflow-wrap:anywhere}
 img{max-width:100%;height:auto}
 table{max-width:100%}
