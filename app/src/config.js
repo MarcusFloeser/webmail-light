@@ -19,6 +19,11 @@ module.exports = {
   adminPassword: env.ADMIN_PASSWORD || '',
   cookieSecure: env.COOKIE_SECURE === 'true',
   trustProxy: env.TRUST_PROXY === 'true',
+  // Schutz gegen Passwort-Raten
+  loginMaxPerAccount: parseInt(env.LOGIN_MAX_PER_ACCOUNT, 10) || 5,
+  loginMaxPerIp: parseInt(env.LOGIN_MAX_PER_IP, 10) || 20,
+  loginWhitelist: env.LOGIN_WHITELIST || '',
+  loginFailDelayMs: env.LOGIN_FAIL_DELAY_MS !== undefined && env.LOGIN_FAIL_DELAY_MS !== '' ? parseInt(env.LOGIN_FAIL_DELAY_MS, 10) : 1000,
   allowRegistration: env.ALLOW_REGISTRATION === 'true',
   syncInitialMessages: parseInt(env.SYNC_INITIAL_MESSAGES, 10) || 1000,
   pollIntervalMs: (parseInt(env.POLL_INTERVAL_SECONDS, 10) || 120) * 1000,

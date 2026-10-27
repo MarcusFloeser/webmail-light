@@ -8,7 +8,7 @@ Browser-Mailclient für mehrere Benutzer, komplett als Docker-Compose-Stack.
 | Push | Dauerhafte IMAP-**IDLE**-Verbindung auf den Posteingang jedes Kontos → WebSocket an alle offenen Browser-Tabs, optional Desktop-Benachrichtigung. Übrige Ordner per STATUS-Polling (Standard 120 s) |
 | Ordnerliste | Hierarchisch, Systemordner (SPECIAL-USE bzw. Namenserkennung DE/EN) zuerst, Ungelesen-Zähler, anlegen/umbenennen/löschen, Drag & Drop |
 | Threads | Konversationen über References/In-Reply-To, **kontoweit über alle Ordner** (eigene Antworten aus „Gesendet“ erscheinen im Verlauf), Duplikate werden zusammengefasst, nachträgliches Zusammenführen wenn ein Bindeglied später eintrifft |
-| CalDAV | Beliebig viele vorhandene CalDAV-Server pro Benutzer (Nextcloud, mailcow/SOGo, Radicale …); Monats-/Wochen-/Listenansicht, wiederkehrende Termine, Erinnerungen als Browser-Benachrichtigung, Einladungen (.ics) aus Mails übernehmen |
+| CalDAV | Beliebig viele vorhandene CalDAV-Server pro Benutzer (Nextcloud, mailcow/SOGo, Radicale …); Monats-/Wochen-/Listenansicht, Serientermine (Intervall, Wochentage, Ende nach Datum/Anzahl; einzelne Termine einer Serie ändern oder löschen), empfangene Einladungen zusagen/ablehnen (iMIP, auch mit SOGo), Erinnerungen als Browser-Benachrichtigung |
 | CardDAV | Adressbücher der eingebundenen Server, Kontakte inkl. Adressen bearbeiten (unbekannte vCard-Felder bleiben erhalten), Adress-Autovervollständigung beim Schreiben |
 | Benutzerverwaltung | Übersicht für Admins mit letzter Anmeldung (Tooltip: zuletzt aktiv) und Mailbox-Belegung je Benutzer – per IMAP QUOTA vom Mailserver (z. B. Dovecot mit Quota-Plugin), sonst als „ca.“ aus den synchronisierten Nachrichten geschätzt; Aktualisierung alle 30 Min. |
 | Mehrbenutzer | Anmeldung direkt mit den IMAP-Zugangsdaten (`AUTH_MODE=imap`, Benutzer + Postfach werden beim ersten Login angelegt) oder eigene Benutzerverwaltung; jeder Benutzer sieht nur seine Daten |
@@ -109,6 +109,33 @@ Verbindung prüfen: `docker compose exec app node src/tools/ldap-check.js marcus
 
 Ohne LDAP-Konfiguration kann mit `PASSWORD_HELP_TEXT` ein Hinweis („Wende dich an …“) hinter „Passwort vergessen?“ hinterlegt werden.
 
+## Filter & Abwesenheitsnotiz
+
+Unter **Einstellungen → Filter & Abwesenheit** richtet jeder Benutzer pro Konto ein:
+
+- **Abwesenheitsnotiz** mit Betreff, Text, optionalem Zeitraum (von/bis – schaltet sich selbst ein und aus) und „höchstens alle n Tage pro Absender“. Sie antwortet auf alle Adressen des Kontos (inkl. Identitäten), nicht auf Spam, Newsletter und automatische Mails.
+- **Filterregeln**: Wenn Absender / Empfänger / Cc / Betreff / beliebige Kopfzeile *enthält / enthält nicht / ist genau / ist nicht* … dann *in Ordner verschieben, als gelesen markieren, markieren, weiterleiten (auch mit Kopie), löschen*. Regeln lassen sich einzeln ein-/ausschalten und sortieren.
+
+Die Regeln liegen als Sieve-Script „webmail“ direkt auf dem Mailserver (ManageSieve, RFC 5804) und wirken auch, wenn niemand eingeloggt ist – auch für Mails, die aufs Handy kommen. Der Mailserver prüft das Script beim Speichern.
+
+**mailcow**: funktioniert ohne Zusatzkonfiguration (Dovecot, Port 4190, STARTTLS, gleiche Zugangsdaten). Den Port stellt der Admin pro Domain ein (*Benutzer → Domains & Mailserver*, Feld „Sieve-Port“, 0 = aus). Auf einem Mailserver kann immer nur ein Sieve-Script aktiv sein: Hat jemand Filter in **SOGo** angelegt, bindet die Webmail diese ein („Bestehende Filter aus „sogo“ weiter ausführen“), sodass sie weiterlaufen. Werden die Filter später wieder in SOGo gespeichert, aktiviert SOGo sein eigenes Script – dann in der Webmail einmal erneut speichern. Abwesenheitsnotiz bitte nur an einer Stelle (Webmail *oder* SOGo) einschalten.
+
+## Schutz vor Passwort-Raten
+
+Fehlgeschlagene Anmeldungen (Login, Kalender/Kontakte-Zugriff, „Passwort ändern“) werden gezählt:
+
+| Regel | Standard | Wirkung |
+|---|---|---|
+| gleiches Konto von derselben Adresse | 5 Fehlversuche (`LOGIN_MAX_PER_ACCOUNT`) | diese Adresse für dieses Konto 15 Min. gesperrt |
+| beliebige Konten von derselben Adresse | 20 Fehlversuche (`LOGIN_MAX_PER_IP`) | Adresse 60 Min. gesperrt |
+| gleiches Konto von vielen Adressen | ab 30 pro Stunde | nur gebremst – keine Sperre, damit niemand Benutzer aussperren kann |
+
+Jede falsche Eingabe wird zusätzlich ~1 s verzögert. Netze in `LOGIN_WHITELIST` werden nie gesperrt. Unter **Benutzer → Sicherheit** sieht der Admin aktive Sperren und die letzten Fehlversuche und kann Sperren aufheben. Fehlversuche stehen im Log als `[login] Fehlversuch (login) für "name@domain" von 1.2.3.4` (für eigenes fail2ban verwendbar).
+
+**Wichtig hinter Nginx**: `TRUST_PROXY=true` muss gesetzt sein, sonst sieht die Webmail für alle Benutzer die Adresse des Proxys (die Seite *Sicherheit* warnt dann).
+
+**Wichtig mit mailcow**: mailcow sperrt Adressen mit vielen fehlgeschlagenen IMAP-Anmeldungen (Netfilter/Fail2ban). Die Webmail meldet sich immer von *ihrer* Adresse an – vertippen sich mehrere Benutzer, könnte mailcow die ganze Webmail sperren. Deshalb die IP des Webmail-Servers im mailcow-Adminbereich bei den **Fail2ban-Parametern** (unter *System → Konfiguration*) in die **Whitelist** eintragen. Den Schutz vor Raten übernimmt dann die Webmail (mit der echten Adresse des Besuchers).
+
 ## Kalender & Kontakte
 
 Webmail bringt keinen eigenen CalDAV/CardDAV-Server mit. Unter **Einstellungen → Kalender & Kontakte** bindet jeder Benutzer seinen vorhandenen Server ein; Kalender und Adressbücher werden automatisch gefunden. Beispiel-URLs:
@@ -123,6 +150,21 @@ Webmail bringt keinen eigenen CalDAV/CardDAV-Server mit. Unter **Einstellungen �
 
 Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. synchron.
 
+### Serientermine
+
+Im Termin-Dialog unter **Wiederholung**: täglich, wöchentlich (mit Wochentagen), monatlich oder jährlich, jeweils „alle n Tage/Wochen/…“, endet nie, an einem Datum oder nach einer Anzahl Terminen. Beim Ändern oder Löschen eines Termins aus einer Serie fragt die Webmail: **Nur diesen Termin** (Ausnahme bzw. Löschung nur dieses Datums) oder **Alle Termine der Serie** (eine geänderte Uhrzeit verschiebt die ganze Serie). Erweiterte Regeln aus anderen Programmen (z. B. „jeden 2. Dienstag im Monat“) werden angezeigt und bleiben erhalten, solange die Wiederholung nicht geändert wird.
+
+### Einladungen beantworten
+
+Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
+
+- Eine Einladungsmail zeigt eine Karte mit Zeit, Ort, Organisator und Teilnehmern sowie den Knöpfen **Zusagen / Vielleicht / Absagen**. Die Antwort geht als Standard-Kalendermail (iMIP) an den Organisator; der Termin wird im gewählten Kalender eingetragen (bei Absage entfernt). Das Senden der Antwort lässt sich abwählen.
+- Im Kalender sind unbeantwortete Einladungen gestrichelt, vorläufig zugesagte schraffiert. Im Termin-Dialog lässt sich die Antwort nachträglich ändern; beim Löschen einer Einladung kann eine Absage an den Organisator gehen.
+- **Absagen des Organisators** lassen sich mit einem Klick aus dem Kalender entfernen. Antworten auf Einladungen, die du z. B. in SOGo oder auf dem Handy verschickt haben, werden beim Öffnen der Antwortmail in den Termin übernommen.
+- Teilnehmer von Terminen aus anderen Programmen werden im Dialog mit ihrem Status angezeigt und beim Bearbeiten nicht verändert.
+
+**SOGo/mailcow**: Eingetragene Einladungen erhalten `SCHEDULE-AGENT=CLIENT` (RFC 6638), damit SOGo nicht zusätzlich eine eigene Antwort verschickt (ab SOGo 3.2.5).
+
 ## Konfiguration (`.env`)
 
 | Variable | Standard | Bedeutung |
@@ -136,6 +178,7 @@ Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. 
 | `AUTH_DEFAULT_DOMAIN` | – | Wird an Logins ohne `@` angehängt |
 | `AUTH_ADMINS` | – | Kommagetrennte Logins mit Admin-Rechten |
 | `AUTH_CREATE_ACCOUNT` | true | Postfach beim ersten Login als Konto einrichten |
+| `LOGIN_MAX_PER_ACCOUNT` / `LOGIN_MAX_PER_IP` / `LOGIN_WHITELIST` | 5 / 20 / – | Schutz vor Passwort-Raten (siehe oben) |
 | `AUTH_DAV_URL` / `AUTH_DAV_NAME` | – / Kalender & Kontakte | CalDAV/CardDAV-Server, der beim IMAP-Login mit denselben Zugangsdaten eingebunden wird |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | admin / zufällig | Lokaler Administrator beim allerersten Start (bei `AUTH_MODE=imap` nur, wenn ein Passwort gesetzt ist) |
 | `PUBLIC_URL` | – | Öffentliche Adresse, z. B. `https://mail.example.com` (für den Link in der Zurücksetzen-Mail) |
@@ -170,8 +213,7 @@ Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. 
 - **Keine OAuth2-Anmeldung.** Gmail, iCloud, Yahoo, Fastmail brauchen ein App-Passwort; Microsoft-Konten (Outlook.com/Microsoft 365) erlauben Passwort-Login teils gar nicht mehr.
 - Push per IDLE nur für den Posteingang jedes Kontos (IMAP erlaubt pro Verbindung nur einen Ordner); andere Ordner werden im Intervall abgefragt und sofort beim Öffnen synchronisiert.
 - Suche durchsucht den lokalen Index (Betreff, Absender, Empfänger, Vorschau), keine Volltextsuche im Mailtext.
-- Wiederkehrende Termine: Titel/Ort/Beschreibung bearbeitbar, Zeiten einer Serie bitte im Ursprungsprogramm ändern; einzelne Ausnahmen werden angezeigt, aber nicht erzeugt.
-- Antworten auf Einladungen (Zusagen/Absagen per iMIP) werden nicht verschickt – Einladungen lassen sich übernehmen.
+- Einladungen werden nur beantwortet, nicht erstellt (Teilnehmer einladen bitte in SOGo oder einem anderen Kalenderprogramm).
 
 ## Projektstruktur
 
@@ -185,6 +227,8 @@ app/src/ldap.js         Passwort ändern/zurücksetzen im LDAP
 app/src/password.js     „Passwort vergessen“-Ablauf
 app/src/imap/           Sync-Worker (IDLE, CONDSTORE), Threading, Manager
 app/src/mail/           API für Konten, Identitäten, Ordner, Threads, Aktionen, Versand
-app/src/dav/            CalDAV/CardDAV-Client, Kalender-/Kontakt-API, vCard/iCal
+app/src/dav/            CalDAV/CardDAV-Client, Kalender-/Kontakt-API, vCard/iCal, Einladungen beantworten
+app/src/sieve/          ManageSieve-Client, Sieve-Script für Filter & Abwesenheit
+app/src/loginguard.js   Schutz vor Passwort-Raten
 app/public/             Frontend (Vanilla-JS-Module, kein Build-Schritt)
 ```

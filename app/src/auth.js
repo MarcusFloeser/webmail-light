@@ -7,6 +7,7 @@ const config = require('./config');
 const { hashPassword, verifyPassword, randomToken } = require('./crypto');
 const { authenticate } = require('./imap-auth');
 const password = require('./password');
+const guard = require('./loginguard');
 
 const COOKIE = 'wm_sid';
 const BACKGROUND_MAX = 4 * 1048576; // Hintergrundbild: max. 4 MB
@@ -84,22 +85,6 @@ async function userFromRequest(req, res) {
 }
 
 // Einfaches Brute-Force-Limit pro IP + Benutzername
-const failures = new Map();
-function tooManyFailures(key) {
-  const f = failures.get(key);
-  if (!f) return false;
-  if (Date.now() - f.first > 15 * 60000) { failures.delete(key); return false; }
-  return f.count >= 10;
-}
-function noteFailure(key) {
-  const f = failures.get(key) || { count: 0, first: Date.now() };
-  f.count++;
-  failures.set(key, f);
-}
-setInterval(() => {
-  const now = Date.now();
-  for (const [k, f] of failures) if (now - f.first > 15 * 60000) failures.delete(k);
-}, 60000).unref();
 
 // ---------------------------------------------------------------------------
 // Middleware
@@ -136,7 +121,7 @@ function csrfGuard(req, res, next) {
 
 const basicCache = new Map(); // sha256(user:pass) -> { user, until }
 
-async function verifyBasic(header) {
+async function verifyBasic(header, ip = '') {
   if (!header || !header.startsWith('Basic ')) return null;
   const decoded = Buffer.from(header.slice(6), 'base64').toString('utf8');
   const i = decoded.indexOf(':');
@@ -146,10 +131,10 @@ async function verifyBasic(header) {
   const key = crypto.createHash('sha256').update(username + '\0' + password).digest('hex');
   const cached = basicCache.get(key);
   if (cached && cached.until > Date.now()) return cached.user;
-  if (tooManyFailures('dav:' + username)) return null;
+  if (await guard.check(ip, username)) return null;
   const user = await authenticate(username, password);
   if (!user) {
-    noteFailure('dav:' + username);
+    await guard.fail(ip, username, 'dav');
     return null;
   }
   basicCache.set(key, { user, until: Date.now() + 5 * 60000 });
@@ -208,8 +193,11 @@ function router({ onUserDeleted }) {
     try {
       const username = String(req.body.username || '').trim().toLowerCase();
       const password = String(req.body.password || '');
-      const key = `${req.ip}:${username}`;
-      if (tooManyFailures(key)) return res.status(429).json({ error: 'Zu viele Fehlversuche – bitte später erneut versuchen' });
+      const block = await guard.check(req.ip, username);
+      if (block) {
+        console.warn(`[login] Gesperrt (${block.reason}) für "${username}" von ${guard.normIp(req.ip)}`);
+        return res.status(429).json({ error: guard.message(block) });
+      }
       // Mit IMAP-Anmeldung gilt die vollständige E-Mail-Adresse als Login.
       // Ausnahme: lokal angelegte Benutzer (z. B. Notfall-Admin) mit ihrem Benutzernamen.
       if (config.authMode === 'imap' && !username.includes('@')) {
@@ -218,10 +206,10 @@ function router({ onUserDeleted }) {
       }
       const user = await authenticate(username, password);
       if (!user) {
-        noteFailure(key);
+        await guard.fail(req.ip, username, 'login');
         return res.status(401).json({ error: 'Benutzername oder Passwort falsch' });
       }
-      failures.delete(key);
+      await guard.success(req.ip, username);
       const sid = randomToken(32);
       // „Angemeldet bleiben": dauerhaftes Cookie (SESSION_DAYS), sonst Sitzungs-Cookie,
       // das beim Schliessen des Browsers verfällt (serverseitig zusätzlich SESSION_IDLE_HOURS)
@@ -275,17 +263,27 @@ function router({ onUserDeleted }) {
 
   r.post('/me/password', requireAuth, async (req, res, next) => {
     try {
+      // Auch das aktuelle Passwort darf nicht beliebig oft geraten werden (z. B. offene Sitzung)
+      const block = await guard.check(req.ip, req.user.username);
+      if (block) return res.status(429).json({ error: guard.message(block) });
+      const wrongCurrent = async () => {
+        await guard.fail(req.ip, req.user.username, 'password');
+        return res.status(400).json({ error: 'Das aktuelle Passwort ist falsch' });
+      };
       if (req.user.auth_source === 'imap') {
         if (!password.ldapChangeAvailable()) {
           return res.status(400).json({ error: 'Dein Passwort ist das des Mailservers und wird dort geändert' });
         }
-        await password.changeViaLdap(req.user, String(req.body.current || ''), String(req.body.password || ''));
+        try {
+          await password.changeViaLdap(req.user, String(req.body.current || ''), String(req.body.password || ''));
+        } catch (err) {
+          if (err.status === 400 && /aktuelle Passwort ist falsch/i.test(err.message)) return wrongCurrent();
+          throw err;
+        }
         clearBasicCacheFor(req.user.username);
         return res.json({ ok: true });
       }
-      if (!(await verifyPassword(String(req.body.current || ''), req.user.password_hash))) {
-        return res.status(400).json({ error: 'Aktuelles Passwort ist falsch' });
-      }
+      if (!(await verifyPassword(String(req.body.current || ''), req.user.password_hash))) return wrongCurrent();
       const pwErr = validatePassword(req.body.password);
       if (pwErr) return res.status(400).json({ error: pwErr });
       await db.query('UPDATE users SET password_hash = $2 WHERE id = $1', [req.user.id, await hashPassword(req.body.password)]);

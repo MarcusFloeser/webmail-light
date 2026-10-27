@@ -4,6 +4,7 @@ import * as appearance from './appearance.js';
 import { richEditor } from './richtext.js';
 import { state, loadAccounts } from './state.js';
 import * as reminders from './reminders.js';
+import { filterSection } from './filters.js';
 
 const PRESETS = [
   { domains: ['gmail.com', 'googlemail.com'], name: 'Gmail', imapHost: 'imap.gmail.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecurity: 'ssl', saveSent: false, hint: 'Gmail: App-Passwort verwenden (Google-Konto → Sicherheit → App-Passwörter). Gmail legt gesendete Mails selbst ab.' },
@@ -24,7 +25,7 @@ export function unmount() { root = null; }
 
 export async function render(main, route) {
   const section = route.parts[1] || 'accounts';
-  const tabs = [['accounts', 'E-Mail-Konten'], ['dav', 'Kalender & Kontakte'], ['appearance', 'Darstellung'], ['profile', 'Profil']];
+  const tabs = [['accounts', 'E-Mail-Konten'], ['filters', 'Filter & Abwesenheit'], ['dav', 'Kalender & Kontakte'], ['appearance', 'Darstellung'], ['profile', 'Profil']];
   const content = h('div', { class: 'settings-content' });
   root = h('div', { class: 'settings-view' },
     h('nav', { class: 'settings-tabs' }, tabs.map(([k, l]) => h('a', { href: `#/settings/${k}`, class: section === k ? 'active' : '' }, l))),
@@ -37,6 +38,8 @@ export async function render(main, route) {
       const acc = state.accounts.find((a) => a.id === Number(sub));
       if (acc) accountDetail(content, acc); else accountList(content);
     } else accountList(content);
+  } else if (section === 'filters') {
+    await filterSection(content, route.parts[2]);
   } else if (section === 'dav') {
     await davSection(content);
   } else if (section === 'appearance') {

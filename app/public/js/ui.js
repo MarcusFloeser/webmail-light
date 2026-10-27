@@ -76,6 +76,9 @@ const ICONS = {
   user: 'M12 12a4 4 0 100-8 4 4 0 000 8zM4 21a8 8 0 0116 0',
   menu: 'M4 6h16M4 12h16M4 18h16',
   back: 'M19 12H5M12 5l-7 7 7 7',
+  up: 'M6 15l6-6 6 6',
+  down: 'M6 9l6 6 6-6',
+  alert: 'M12 9v4M12 17h.01M10.3 3.9L1.8 18a2 2 0 001.7 3h17a2 2 0 001.7-3L13.7 3.9a2 2 0 00-3.4 0z',
   bold: 'M7 5h6a3.5 3.5 0 010 7H7zM7 12h7a3.5 3.5 0 010 7H7z',
   italic: 'M10 5h8M6 19h8M14 5l-4 14',
   underline: 'M7 4v7a5 5 0 0010 0V4M5 20h14',
@@ -169,6 +172,29 @@ export function confirmDialog(title, text, { danger = true, confirmLabel = 'OK' 
         { label: confirmLabel, primary: !danger, danger, onClick: () => { done = true; resolve(true); } },
       ],
       onClose: () => { if (!done) resolve(false); },
+    });
+  });
+}
+
+/**
+ * Auswahl-Dialog: choices [{ value, label, primary, danger }], optional eine Checkbox.
+ * → Promise<{ value, checked } | null>
+ */
+export function choiceDialog(title, text, choices, { checkbox = null } = {}) {
+  return new Promise((resolve) => {
+    let done = false;
+    const cb = checkbox ? h('input', { type: 'checkbox', checked: checkbox.checked !== false }) : null;
+    modal({
+      title,
+      body: h('div', { class: 'choice-body' },
+        text ? h('p', {}, text) : null,
+        cb ? h('label', { class: 'check' }, cb, ` ${checkbox.label}`) : null),
+      actions: [
+        { label: 'Abbrechen', onClick: () => { done = true; resolve(null); } },
+        ...choices.map((c) => ({ label: c.label, primary: c.primary, danger: c.danger,
+          onClick: () => { done = true; resolve({ value: c.value, checked: cb ? cb.checked : false }); } })),
+      ],
+      onClose: () => { if (!done) resolve(null); },
     });
   });
 }

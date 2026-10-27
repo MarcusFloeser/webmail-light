@@ -80,10 +80,10 @@ function router() {
     if (dup) throw httpError(409, `Die Domain ${v.domain} ist bereits eingerichtet`);
     const d = await db.one(
       `INSERT INTO mail_domains (domain, imap_host, imap_port, imap_security, smtp_host, smtp_port, smtp_security,
-                                 login_format, allow_insecure_tls, dav_url, note)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *`,
+                                 login_format, allow_insecure_tls, dav_url, note, sieve_port)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12) RETURNING *`,
       [v.domain, v.imap_host, v.imap_port, v.imap_security, v.smtp_host, v.smtp_port, v.smtp_security,
-        v.login_format, v.allow_insecure_tls, v.dav_url, v.note]);
+        v.login_format, v.allow_insecure_tls, v.dav_url, v.note, v.sieve_port]);
     const assigned = await domains.assignExisting();
     res.json({ domain: domains.publicDomain(d), assigned });
   }));
@@ -98,10 +98,10 @@ function router() {
     }
     const d = await db.one(
       `UPDATE mail_domains SET domain=$2, imap_host=$3, imap_port=$4, imap_security=$5, smtp_host=$6, smtp_port=$7,
-              smtp_security=$8, login_format=$9, allow_insecure_tls=$10, dav_url=$11, note=$12, updated_at=now()
+              smtp_security=$8, login_format=$9, allow_insecure_tls=$10, dav_url=$11, note=$12, sieve_port=$13, updated_at=now()
         WHERE id = $1 RETURNING *`,
       [existing.id, v.domain, v.imap_host, v.imap_port, v.imap_security, v.smtp_host, v.smtp_port, v.smtp_security,
-        v.login_format, v.allow_insecure_tls, v.dav_url, v.note]);
+        v.login_format, v.allow_insecure_tls, v.dav_url, v.note, v.sieve_port]);
     const updated = await domains.applyToAccounts(d.id);
     const assigned = await domains.assignExisting();
     res.json({ domain: domains.publicDomain(d), updated, assigned });
@@ -156,6 +156,26 @@ function router() {
   r.put('/admin/settings', adminOnly, wrap(async (req, res) => {
     if (req.body.allowCustomServers !== undefined) await domains.setSetting('allowCustomServers', !!req.body.allowCustomServers);
     res.json({ allowCustomServers: await domains.customServersAllowed() });
+  }));
+
+  // ------------------------------------------------------------ Anmeldeschutz
+
+  r.get('/admin/security', adminOnly, wrap(async (req, res) => {
+    const guard = require('./loginguard');
+    const config = require('./config');
+    const ip = guard.normIp(req.ip);
+    // Läuft die Webmail hinter einem Proxy ohne TRUST_PROXY, sehen alle Anmeldungen gleich aus
+    const privateIp = /^(10\.|127\.|172\.(1[6-9]|2\d|3[01])\.|192\.168\.|::1$|fc|fd)/i.test(ip);
+    res.json({ ...(await guard.overview()), yourIp: ip, trustProxy: !!config.trustProxy, proxyWarning: privateIp && !config.trustProxy });
+  }));
+
+  r.post('/admin/security/unblock', adminOnly, wrap(async (req, res) => {
+    const guard = require('./loginguard');
+    const ip = String(req.body.ip || '').trim();
+    const username = String(req.body.username || '').trim();
+    if (!ip && !username) throw httpError(400, 'IP-Adresse oder Benutzer angeben');
+    await guard.unblock({ ip, username });
+    res.json({ ok: true });
   }));
 
   return r;

@@ -39,7 +39,7 @@ function publicDomain(d, accountCount) {
     imapHost: d.imap_host, imapPort: d.imap_port, imapSecurity: d.imap_security,
     smtpHost: d.smtp_host, smtpPort: d.smtp_port, smtpSecurity: d.smtp_security,
     loginFormat: d.login_format, allowInsecureTls: d.allow_insecure_tls,
-    davUrl: d.dav_url || '', note: d.note || '',
+    davUrl: d.dav_url || '', note: d.note || '', sievePort: d.sieve_port ?? 4190,
     accounts: accountCount === undefined ? undefined : Number(accountCount),
     updatedAt: d.updated_at,
   };
@@ -59,6 +59,7 @@ function domainInput(b, existing) {
     allow_insecure_tls: !!(b.allowInsecureTls ?? existing?.allow_insecure_tls ?? false),
     dav_url: String(b.davUrl ?? existing?.dav_url ?? '').trim(),
     note: String(b.note ?? existing?.note ?? '').trim().slice(0, 300),
+    sieve_port: parseInt(b.sievePort ?? existing?.sieve_port ?? 4190, 10),
   };
   if (!DOMAIN_RE.test(v.domain)) throw httpError(400, 'Bitte eine gültige Domain angeben (z. B. example.ch) oder * für alle übrigen');
   if (!v.imap_host || !v.smtp_host) throw httpError(400, 'IMAP- und SMTP-Server sind Pflichtfelder');
@@ -69,6 +70,7 @@ function domainInput(b, existing) {
   v.imap_security = effectiveSecurity('imap', v.imap_port, SECURITY.includes(v.imap_security) ? v.imap_security : '');
   v.smtp_security = effectiveSecurity('smtp', v.smtp_port, SECURITY.includes(v.smtp_security) ? v.smtp_security : '');
   if (!['email', 'local'].includes(v.login_format)) v.login_format = 'email';
+  if (!Number.isInteger(v.sieve_port) || v.sieve_port < 0 || v.sieve_port > 65535) throw httpError(400, 'Ungültiger Sieve-Port (0 = aus)');
   if (v.dav_url && !/^https?:\/\//i.test(v.dav_url)) throw httpError(400, 'Die Kalender/Kontakte-Adresse muss mit http:// oder https:// beginnen');
   return v;
 }

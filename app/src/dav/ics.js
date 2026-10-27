@@ -6,6 +6,8 @@ const ICAL = require('ical.js');
 
 const MAX_OCCURRENCES = 20000;
 
+const nowUtc = () => ICAL.Time.fromJSDate(new Date(), true);
+
 function registerTimezones(comp) {
   for (const tz of comp.getAllSubcomponents('vtimezone')) {
     try {
@@ -20,11 +22,98 @@ function timeOut(t) {
   return t.isDate ? t.toString().slice(0, 10) : t.toJSDate().toISOString();
 }
 
+const WEEKDAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
+
 function rruleInfo(vevent) {
   const p = vevent.getFirstProperty('rrule');
   if (!p) return null;
   const r = p.getFirstValue();
-  return r ? { freq: r.freq, interval: r.interval || 1, count: r.count || null, until: r.until ? r.until.toString() : null } : null;
+  if (!r) return null;
+  const byday = (r.parts && r.parts.BYDAY) || [];
+  // „einfach“ = mit der Webmail vollständig bearbeitbar (sonst bleibt die Regel beim Speichern unverändert)
+  const otherParts = Object.keys(r.parts || {}).filter((k) => k !== 'BYDAY' && (r.parts[k] || []).length);
+  const simple = !otherParts.length && byday.every((d) => WEEKDAYS.includes(String(d).toUpperCase())) && (!byday.length || r.freq === 'WEEKLY');
+  return {
+    freq: r.freq,
+    interval: r.interval || 1,
+    byday: byday.map((d) => String(d).toUpperCase()),
+    count: r.count || null,
+    until: r.until ? r.until.toString().slice(0, 10) : null,
+    simple,
+  };
+}
+
+/** Wiederholungsregel aus den Formularangaben. rule: 'WEEKLY' oder { freq, interval, byday[], count, until } */
+function makeRecur(rule, dtstart) {
+  const r = typeof rule === 'string' ? { freq: rule } : rule;
+  const freq = String(r.freq || '').toUpperCase();
+  if (!['DAILY', 'WEEKLY', 'MONTHLY', 'YEARLY'].includes(freq)) return null;
+  const data = { freq };
+  const interval = parseInt(r.interval, 10);
+  if (interval > 1) data.interval = Math.min(interval, 999);
+  const byday = (Array.isArray(r.byday) ? r.byday : []).map((d) => String(d).toUpperCase()).filter((d) => WEEKDAYS.includes(d));
+  if (freq === 'WEEKLY' && byday.length) data.byday = WEEKDAYS.filter((d) => byday.includes(d));
+  const count = parseInt(r.count, 10);
+  if (count > 0) data.count = Math.min(count, 5000);
+  else if (r.until && /^\d{4}-\d{2}-\d{2}/.test(r.until)) {
+    // UNTIL muss zum Typ von DTSTART passen: ganztägig = Datum, sonst Zeitpunkt (UTC, Tagesende)
+    const u = ICAL.Time.fromDateString(String(r.until).slice(0, 10));
+    if (dtstart && !dtstart.isDate) {
+      const t = ICAL.Time.fromJSDate(new Date(`${String(r.until).slice(0, 10)}T23:59:59`), true);
+      data.until = t;
+    } else data.until = u;
+  }
+  return new ICAL.Recur(data);
+}
+
+// ------------------------------------------------------------------ Teilnehmer
+
+const mailto = (v) => String(v || '').replace(/^mailto:/i, '').trim().toLowerCase();
+
+function organizerOf(vevent) {
+  const p = vevent.getFirstProperty('organizer');
+  if (!p) return null;
+  return { email: mailto(p.getFirstValue()), name: p.getParameter('cn') || '' };
+}
+
+function attendeesOf(vevent) {
+  return vevent.getAllProperties('attendee').map((p) => ({
+    email: mailto(p.getFirstValue()),
+    name: p.getParameter('cn') || '',
+    partstat: String(p.getParameter('partstat') || 'NEEDS-ACTION').toUpperCase(),
+    role: String(p.getParameter('role') || 'REQ-PARTICIPANT').toUpperCase(),
+  })).filter((a) => a.email);
+}
+
+/**
+ * Teilnehmer setzen. Bestehende Antworten (PARTSTAT) bleiben erhalten.
+ * SCHEDULE-AGENT=CLIENT: Die Webmail verschickt Einladungen selbst – der CalDAV-Server
+ * (z. B. SOGo mit SOGoAppointmentSendEMailNotifications) soll nicht zusätzlich einladen.
+ */
+function setParticipants(vevent, organizer, attendees) {
+  const before = new Map(attendeesOf(vevent).map((a) => [a.email, a]));
+  vevent.removeAllProperties('organizer');
+  vevent.removeAllProperties('attendee');
+  if (!attendees || !attendees.length) return;
+  if (organizer && organizer.email) {
+    const o = vevent.addPropertyWithValue('organizer', `mailto:${organizer.email}`);
+    if (organizer.name) o.setParameter('cn', organizer.name);
+    o.setParameter('schedule-agent', 'CLIENT');
+  }
+  const seen = new Set();
+  for (const a of attendees) {
+    const email = mailto(a.email);
+    if (!email || seen.has(email)) continue;
+    seen.add(email);
+    const old = before.get(email);
+    const p = vevent.addPropertyWithValue('attendee', `mailto:${email}`);
+    if (a.name || (old && old.name)) p.setParameter('cn', a.name || old.name);
+    p.setParameter('role', (old && old.role) || 'REQ-PARTICIPANT');
+    const isOrg = organizer && email === mailto(organizer.email);
+    p.setParameter('partstat', isOrg ? 'ACCEPTED' : (a.partstat || (old && old.partstat) || 'NEEDS-ACTION'));
+    if (!isOrg) p.setParameter('rsvp', 'TRUE');
+    p.setParameter('schedule-agent', 'CLIENT');
+  }
 }
 
 /**
@@ -66,6 +155,9 @@ function baseFields(vevent) {
     location: vevent.getFirstPropertyValue('location') || '',
     description: vevent.getFirstPropertyValue('description') || '',
     uid: vevent.getFirstPropertyValue('uid') || '',
+    organizer: organizerOf(vevent),
+    attendees: attendeesOf(vevent),
+    status: String(vevent.getFirstPropertyValue('status') || '').toUpperCase(),
   };
 }
 
@@ -108,6 +200,8 @@ function expand(data, rangeStart, rangeEnd) {
   let n = 0;
   while ((next = it.next()) && n++ < MAX_OCCURRENCES) {
     const d = ev.getOccurrenceDetails(next);
+    const isEx = d.item.component !== master;
+    if (isEx && String(d.item.component.getFirstPropertyValue('status') || '').toUpperCase() === 'CANCELLED') continue;
     const s = d.startDate.toJSDate();
     if (s >= rangeEnd) break;
     const e = d.endDate ? d.endDate.toJSDate() : s;
@@ -120,6 +214,7 @@ function expand(data, rangeStart, rangeEnd) {
       recurring: true,
       rrule,
       recurrenceId: next.toString(),
+      exception: isEx,
     });
   }
   return out;
@@ -135,17 +230,117 @@ function setText(vevent, name, value) {
   if (value) vevent.addPropertyWithValue(name, String(value));
 }
 
+/** Zeit-Eigenschaft mit passender TZID hinzufügen (wie ICAL.Event#_setTime, aber für mehrfache Eigenschaften). */
+function addTimeProp(comp, name, time) {
+  const prop = new ICAL.Property(name);
+  if (!time.isDate && time.zone && time.zone !== ICAL.Timezone.utcTimezone && time.zone !== ICAL.Timezone.localTimezone && time.zone.tzid) {
+    prop.setParameter('tzid', time.zone.tzid);
+  }
+  prop.setValue(time);
+  comp.addProperty(prop);
+  return prop;
+}
+
+function setTimeProp(comp, name, time) {
+  comp.removeAllProperties(name);
+  return addTimeProp(comp, name, time);
+}
+
+function parseCal(data) {
+  const comp = new ICAL.Component(ICAL.parse(data));
+  registerTimezones(comp);
+  return comp;
+}
+
+const masterOf = (comp) => comp.getAllSubcomponents('vevent').find((v) => !v.hasProperty('recurrence-id'))
+  || comp.getFirstSubcomponent('vevent');
+
+/** RECURRENCE-ID-Text (aus expand) → ICAL.Time in der Zeitzone des Serienbeginns */
+function ridTime(master, rid) {
+  const t = ICAL.Time.fromString(String(rid));
+  const st = master && master.getFirstPropertyValue('dtstart');
+  if (!t.isDate && st && !st.isDate && t.zone !== ICAL.Timezone.utcTimezone) t.zone = st.zone;
+  if (st && st.isDate && !t.isDate) t.isDate = true;
+  return t;
+}
+
+const sameTime = (a, b) => a && b && a.isDate === b.isDate && (a.isDate ? a.toString() === b.toString() : a.toUnixTime() === b.toUnixTime());
+
+function findException(comp, master, rid) {
+  return comp.getAllSubcomponents('vevent').find((v) => v.hasProperty('recurrence-id')
+    && sameTime(v.getFirstPropertyValue('recurrence-id'), rid));
+}
+
+function bumpSequence(vevent) {
+  const seq = parseInt(vevent.getFirstPropertyValue('sequence') || '0', 10);
+  vevent.updatePropertyWithValue('sequence', seq + 1);
+}
+
+function touch(vevent) {
+  vevent.updatePropertyWithValue('dtstamp', nowUtc());
+  vevent.updatePropertyWithValue('last-modified', nowUtc());
+}
+
+function applyReminder(vevent, fields) {
+  if (fields.reminder === undefined) return;
+  for (const a of vevent.getAllSubcomponents('valarm')) vevent.removeSubcomponent(a);
+  vevent.removeAllProperties('x-webmail-noalarm');
+  if (fields.reminder === 'none') {
+    vevent.addPropertyWithValue('x-webmail-noalarm', 'TRUE');
+  } else if (fields.reminder !== null && fields.reminder !== '' && !Number.isNaN(Number(fields.reminder))) {
+    const alarm = new ICAL.Component('valarm');
+    alarm.addPropertyWithValue('action', 'DISPLAY');
+    alarm.addPropertyWithValue('description', fields.title || 'Erinnerung');
+    alarm.addPropertyWithValue('trigger', ICAL.Duration.fromSeconds(-Number(fields.reminder) * 60));
+    vevent.addSubcomponent(alarm);
+  }
+}
+
+function applyText(vevent, fields) {
+  if (fields.title !== undefined) setText(vevent, 'summary', fields.title || '(ohne Titel)');
+  if (fields.location !== undefined) setText(vevent, 'location', fields.location);
+  if (fields.description !== undefined) setText(vevent, 'description', fields.description);
+}
+
+/** Beginn/Ende aus dem Formular → { s, e } (Ende mindestens nach Beginn) */
+function formTimes(fields) {
+  const s = makeTime(fields.start, fields.allDay);
+  let e = fields.end ? makeTime(fields.end, fields.allDay) : null;
+  if (!e || e.compare(s) <= 0) {
+    e = s.clone();
+    if (fields.allDay) e.day += 1; else e.hour += 1;
+  }
+  return { s, e };
+}
+
+function setTimes(vevent, s, e) {
+  vevent.removeAllProperties('duration');
+  setTimeProp(vevent, 'dtstart', s);
+  setTimeProp(vevent, 'dtend', e);
+}
+
+/** Alle Ausnahmen und EXDATEs der Serie entfernen (nach Verschieben der ganzen Serie). */
+function dropExceptions(comp, master) {
+  for (const v of comp.getAllSubcomponents('vevent')) if (v !== master && v.hasProperty('recurrence-id')) comp.removeSubcomponent(v);
+  master.removeAllProperties('exdate');
+}
+
 /**
  * Erzeugt ein neues VCALENDAR bzw. ändert das bestehende.
- * fields: { title, location, description, start, end, allDay, rrule: 'DAILY'|'WEEKLY'|'MONTHLY'|'YEARLY'|null }
+ * fields: {
+ *   title, location, description, start, end, allDay, reminder,
+ *   rrule: null | 'WEEKLY' | { freq, interval, byday[], count, until },
+ *   organizer: { email, name }, attendees: [{ email, name }]   (undefined = unverändert)
+ *   scope: 'all' (Standard) | 'this'   – bei Serien: nur dieses Vorkommen ändern
+ *   recurrenceId: Vorkommen der Serie (aus expand), nötig für scope 'this' und zum Verschieben der Serie
+ * }
  */
 function buildEvent(fields, existing) {
   let comp;
   let vevent;
   if (existing) {
-    comp = new ICAL.Component(ICAL.parse(existing));
-    vevent = comp.getAllSubcomponents('vevent').find((v) => !v.hasProperty('recurrence-id'))
-      || comp.getFirstSubcomponent('vevent');
+    comp = parseCal(existing);
+    vevent = masterOf(comp);
   }
   if (!vevent) {
     comp = new ICAL.Component(['vcalendar', [], []]);
@@ -155,54 +350,322 @@ function buildEvent(fields, existing) {
     vevent.updatePropertyWithValue('uid', crypto.randomUUID());
     comp.addSubcomponent(vevent);
   }
-  const isRecurring = vevent.hasProperty('rrule');
-  setText(vevent, 'summary', fields.title || '(ohne Titel)');
-  setText(vevent, 'location', fields.location);
-  setText(vevent, 'description', fields.description);
-  vevent.updatePropertyWithValue('dtstamp', ICAL.Time.now());
-  vevent.updatePropertyWithValue('last-modified', ICAL.Time.now());
+  const master = vevent;
+  const isRecurring = master.hasProperty('rrule');
+  const uid = master.getFirstPropertyValue('uid');
 
-  const timesChanged = fields.start !== undefined;
-  if (timesChanged && !(isRecurring && fields.keepSeriesTimes)) {
-    const s = makeTime(fields.start, fields.allDay);
-    let e = fields.end ? makeTime(fields.end, fields.allDay) : null;
-    if (!e || e.compare(s) <= 0) {
-      e = s.clone();
-      if (fields.allDay) e.day += 1; else e.hour += 1;
+  // ---- nur dieses Vorkommen einer Serie
+  if (isRecurring && fields.scope === 'this' && fields.recurrenceId) {
+    const rid = ridTime(master, fields.recurrenceId);
+    let ex = findException(comp, master, rid);
+    if (!ex) {
+      ex = new ICAL.Component('vevent');
+      ex.updatePropertyWithValue('uid', uid);
+      for (const name of ['summary', 'location', 'description', 'organizer', 'attendee', 'class', 'transp', 'categories', 'x-webmail-noalarm']) {
+        for (const p of master.getAllProperties(name)) ex.addProperty(ICAL.Property.fromString(p.toICALString()));
+      }
+      for (const a of master.getAllSubcomponents('valarm')) ex.addSubcomponent(new ICAL.Component(a.toJSON()));
+      setTimeProp(ex, 'recurrence-id', rid);
+      // Dauer der Serie übernehmen
+      const st = master.getFirstPropertyValue('dtstart');
+      const en = master.getFirstPropertyValue('dtend');
+      const dur = en && st ? en.subtractDate(st) : (master.getFirstPropertyValue('duration') || ICAL.Duration.fromSeconds(st && st.isDate ? 86400 : 3600));
+      const e = rid.clone(); e.addDuration(dur);
+      setTimes(ex, rid.clone(), e);
+      ex.updatePropertyWithValue('sequence', parseInt(master.getFirstPropertyValue('sequence') || '0', 10));
+      comp.addSubcomponent(ex);
     }
-    vevent.removeAllProperties('dtstart');
-    vevent.removeAllProperties('dtend');
-    vevent.removeAllProperties('duration');
-    vevent.addPropertyWithValue('dtstart', s);
-    vevent.addPropertyWithValue('dtend', e);
+    applyText(ex, fields);
+    if (fields.start !== undefined) { const { s, e } = formTimes(fields); setTimes(ex, s, e); }
+    if (fields.attendees !== undefined) setParticipants(ex, fields.organizer, fields.attendees);
+    applyReminder(ex, fields);
+    touch(ex);
+    bumpSequence(ex);
+    return { uid, data: comp.toString(), recurrenceId: rid.toString() };
+  }
+
+  // ---- ganze Serie bzw. Einzeltermin
+  applyText(master, fields);
+  touch(master);
+
+  if (fields.start !== undefined) {
+    const { s, e } = formTimes(fields);
+    const removingRule = isRecurring && fields.rrule === null;
+    if (isRecurring && fields.recurrenceId && !removingRule) {
+      // Serie verschieben: das bearbeitete Vorkommen bestimmt die Verschiebung
+      const rid = ridTime(master, fields.recurrenceId);
+      const oldStart = master.getFirstPropertyValue('dtstart');
+      const shift = s.isDate === rid.isDate ? s.subtractDate(rid) : null;
+      const dur = e.subtractDate(s);
+      const curEnd = master.getFirstPropertyValue('dtend');
+      const curDur = curEnd ? curEnd.subtractDate(oldStart) : master.getFirstPropertyValue('duration');
+      const moved = !shift || shift.toSeconds() !== 0 || !curDur || curDur.toSeconds() !== dur.toSeconds() || s.isDate !== oldStart.isDate;
+      if (moved) {
+        let ns;
+        if (shift && s.isDate === oldStart.isDate) { ns = oldStart.clone(); ns.addDuration(shift); } else {
+          // Wechsel ganztägig ↔ mit Uhrzeit: Serienbeginn am selben Tag neu setzen
+          ns = s.clone(); ns.year = oldStart.year; ns.month = oldStart.month; ns.day = oldStart.day;
+        }
+        const ne = ns.clone(); ne.addDuration(dur);
+        setTimes(master, ns, ne);
+        dropExceptions(comp, master);
+      }
+    } else if (!(isRecurring && fields.keepSeriesTimes) || removingRule) {
+      setTimes(master, s, e);
+    }
   }
 
   if (fields.rrule !== undefined) {
-    const current = rruleInfo(vevent);
+    const current = rruleInfo(master);
     const wanted = fields.rrule || null;
-    if ((current && current.freq) !== wanted) {
-      vevent.removeAllProperties('rrule');
-      if (wanted) vevent.addPropertyWithValue('rrule', new ICAL.Recur({ freq: wanted }));
+    if (!wanted) {
+      if (current) { master.removeAllProperties('rrule'); dropExceptions(comp, master); }
+    } else {
+      const recur = makeRecur(wanted, master.getFirstPropertyValue('dtstart'));
+      const keepComplex = current && !current.simple && typeof wanted === 'object' && wanted.keep;
+      if (recur && !keepComplex) {
+        const before = master.getFirstPropertyValue('rrule');
+        if (!before || before.toString() !== recur.toString()) {
+          master.removeAllProperties('rrule');
+          master.addPropertyWithValue('rrule', recur);
+        }
+      }
     }
   }
-  // Erinnerung: Zahl = Minuten vor Beginn, 'none' = keine, null = Standard (keine VALARM)
-  if (fields.reminder !== undefined) {
-    for (const a of vevent.getAllSubcomponents('valarm')) vevent.removeSubcomponent(a);
-    vevent.removeAllProperties('x-webmail-noalarm');
-    if (fields.reminder === 'none') {
-      vevent.addPropertyWithValue('x-webmail-noalarm', 'TRUE');
-    } else if (fields.reminder !== null && fields.reminder !== '' && !Number.isNaN(Number(fields.reminder))) {
-      const alarm = new ICAL.Component('valarm');
-      alarm.addPropertyWithValue('action', 'DISPLAY');
-      alarm.addPropertyWithValue('description', fields.title || 'Erinnerung');
-      alarm.addPropertyWithValue('trigger', ICAL.Duration.fromSeconds(-Number(fields.reminder) * 60));
-      vevent.addSubcomponent(alarm);
-    }
+  if (fields.attendees !== undefined) {
+    setParticipants(master, fields.organizer, fields.attendees);
+    // Ausnahmen bekommen dieselben Teilnehmer
+    for (const ex of comp.getAllSubcomponents('vevent')) if (ex !== master) setParticipants(ex, fields.organizer, fields.attendees);
   }
-  const seq = parseInt(vevent.getFirstPropertyValue('sequence') || '0', 10);
-  vevent.updatePropertyWithValue('sequence', seq + 1);
+  applyReminder(master, fields);
+  bumpSequence(master);
+  return { uid, data: comp.toString() };
+}
 
-  return { uid: vevent.getFirstPropertyValue('uid'), data: comp.toString() };
+/** Ein Vorkommen einer Serie löschen (EXDATE). Liefert die neuen Daten. */
+function deleteOccurrence(existing, recurrenceId) {
+  const comp = parseCal(existing);
+  const master = masterOf(comp);
+  if (!master || !master.hasProperty('rrule')) throw new Error('Kein Serientermin');
+  const rid = ridTime(master, recurrenceId);
+  const ex = findException(comp, master, rid);
+  if (ex) comp.removeSubcomponent(ex);
+  addTimeProp(master, 'exdate', rid);
+  touch(master);
+  bumpSequence(master);
+  return { uid: master.getFirstPropertyValue('uid'), data: comp.toString(), recurrenceId: rid.toString() };
+}
+
+// ------------------------------------------------------------------ iTIP / iMIP (Einladungen per Mail)
+
+function stripScheduleParams(vevent) {
+  for (const name of ['organizer', 'attendee']) {
+    for (const p of vevent.getAllProperties(name)) {
+      for (const k of ['schedule-agent', 'schedule-status', 'schedule-force-send']) p.removeParameter(k);
+    }
+  }
+}
+
+/**
+ * iTIP-Nachricht aus einem gespeicherten Termin erzeugen.
+ * method: 'REQUEST' | 'CANCEL'; opts.recurrenceId: nur dieses Vorkommen (CANCEL eines Vorkommens)
+ */
+function itipMessage(data, method, opts = {}) {
+  const comp = parseCal(data);
+  comp.removeAllProperties('method');
+  comp.updatePropertyWithValue('method', method);
+  comp.updatePropertyWithValue('prodid', '-//Webmail//DE');
+  const master = masterOf(comp);
+  let vevents = comp.getAllSubcomponents('vevent');
+  if (opts.recurrenceId && master) {
+    const rid = ridTime(master, opts.recurrenceId);
+    let ex = findException(comp, master, rid);
+    for (const v of vevents) comp.removeSubcomponent(v);
+    if (!ex) {
+      // abgesagtes Vorkommen ohne Ausnahme: aus dem Serientermin ableiten
+      ex = new ICAL.Component('vevent');
+      for (const name of ['uid', 'summary', 'location', 'organizer', 'attendee', 'sequence']) {
+        for (const p of master.getAllProperties(name)) ex.addProperty(ICAL.Property.fromString(p.toICALString()));
+      }
+      setTimeProp(ex, 'recurrence-id', rid);
+      setTimeProp(ex, 'dtstart', rid);
+    }
+    comp.addSubcomponent(ex);
+    vevents = [ex];
+  }
+  for (const v of vevents) {
+    for (const a of v.getAllSubcomponents('valarm')) v.removeSubcomponent(a);
+    v.removeAllProperties('x-webmail-noalarm');
+    stripScheduleParams(v);
+    v.updatePropertyWithValue('dtstamp', nowUtc());
+    if (method === 'CANCEL') {
+      v.updatePropertyWithValue('status', 'CANCELLED');
+      if (Array.isArray(opts.only) && opts.only.length) {
+        const keep = new Set(opts.only.map(mailto));
+        for (const p of v.getAllProperties('attendee')) if (!keep.has(mailto(p.getFirstValue()))) v.removeProperty(p);
+      }
+    }
+  }
+  const summary = (vevents[0] && vevents[0].getFirstPropertyValue('summary')) || '';
+  return { method, summary, data: comp.toString() };
+}
+
+/** iTIP-Antwort (REPLY) eines Teilnehmers erzeugen. */
+function itipReply(data, email, partstat, opts = {}) {
+  const comp = parseCal(data);
+  const out = new ICAL.Component(['vcalendar', [], []]);
+  out.updatePropertyWithValue('prodid', '-//Webmail//DE');
+  out.updatePropertyWithValue('version', '2.0');
+  out.updatePropertyWithValue('method', 'REPLY');
+  const me = mailto(email);
+  let vevents = comp.getAllSubcomponents('vevent');
+  if (opts.recurrenceId) {
+    const master = masterOf(comp);
+    const rid = master ? ridTime(master, opts.recurrenceId) : null;
+    vevents = vevents.filter((v) => rid && v.hasProperty('recurrence-id') && sameTime(v.getFirstPropertyValue('recurrence-id'), rid));
+  } else {
+    vevents = vevents.filter((v) => !v.hasProperty('recurrence-id')).slice(0, 1);
+    if (!vevents.length) vevents = comp.getAllSubcomponents('vevent');
+  }
+  for (const v of vevents) {
+    const r = new ICAL.Component('vevent');
+    for (const name of ['uid', 'recurrence-id', 'dtstart', 'dtend', 'duration', 'summary', 'sequence', 'organizer']) {
+      for (const p of v.getAllProperties(name)) r.addProperty(ICAL.Property.fromString(p.toICALString()));
+    }
+    r.updatePropertyWithValue('dtstamp', nowUtc());
+    const mine = v.getAllProperties('attendee').find((p) => mailto(p.getFirstValue()) === me);
+    const att = mine ? ICAL.Property.fromString(mine.toICALString()) : new ICAL.Property('attendee');
+    if (!mine) att.setValue(`mailto:${me}`);
+    if (opts.name && !att.getParameter('cn')) att.setParameter('cn', opts.name);
+    att.setParameter('partstat', partstat);
+    for (const k of ['rsvp', 'schedule-agent', 'schedule-status']) att.removeParameter(k);
+    r.addProperty(att);
+    stripScheduleParams(r);
+    out.addSubcomponent(r);
+  }
+  return { method: 'REPLY', summary: (vevents[0] && vevents[0].getFirstPropertyValue('summary')) || '', data: out.toString() };
+}
+
+/**
+ * Empfangene Einladung lesen.
+ * myEmails: eigene Adressen (für den eigenen Teilnehmerstatus)
+ */
+function parseInvitation(data, myEmails = []) {
+  const comp = parseCal(data);
+  const method = String(comp.getFirstPropertyValue('method') || 'PUBLISH').toUpperCase();
+  const vevents = comp.getAllSubcomponents('vevent');
+  if (!vevents.length) throw new Error('Keine Termindaten gefunden');
+  const v = vevents.find((x) => !x.hasProperty('recurrence-id')) || vevents[0];
+  const ev = new ICAL.Event(v);
+  const mine = new Set(myEmails.map(mailto));
+  const attendees = attendeesOf(v);
+  const me = attendees.find((a) => mine.has(a.email)) || null;
+  const s = ev.startDate;
+  let e = ev.endDate;
+  if (s && !e) { e = s.clone(); if (s.isDate) e.day += 1; }
+  const rid = v.getFirstPropertyValue('recurrence-id');
+  return {
+    method,
+    uid: v.getFirstPropertyValue('uid') || '',
+    sequence: parseInt(v.getFirstPropertyValue('sequence') || '0', 10),
+    title: v.getFirstPropertyValue('summary') || '(ohne Titel)',
+    location: v.getFirstPropertyValue('location') || '',
+    description: v.getFirstPropertyValue('description') || '',
+    start: s ? timeOut(s) : null,
+    end: e ? timeOut(e) : null,
+    allDay: !!(s && s.isDate),
+    rrule: rruleInfo(v),
+    recurrenceId: rid ? rid.toString() : null,
+    organizer: organizerOf(v),
+    attendees,
+    me: me ? me.email : null,
+    myStatus: me ? me.partstat : null,
+    status: String(v.getFirstPropertyValue('status') || '').toUpperCase(),
+    // Bei REPLY: wer hat wie geantwortet
+    replies: method === 'REPLY' ? vevents.flatMap((x) => attendeesOf(x).map((a) => ({ ...a, recurrenceId: x.getFirstPropertyValue('recurrence-id') ? x.getFirstPropertyValue('recurrence-id').toString() : null }))) : [],
+  };
+}
+
+/**
+ * Antwort eines Teilnehmers (REPLY) in den gespeicherten Termin des Organisators übernehmen.
+ * Liefert { data, changed: [{ email, partstat }] } oder null, wenn nichts passt.
+ */
+function applyReply(existing, replyData) {
+  const comp = parseCal(existing);
+  const reply = parseCal(replyData);
+  const master = masterOf(comp);
+  if (!master) return null;
+  const changed = [];
+  for (const rv of reply.getAllSubcomponents('vevent')) {
+    const rrid = rv.getFirstPropertyValue('recurrence-id');
+    let targets;
+    if (rrid) {
+      const ex = findException(comp, master, ridTime(master, rrid.toString()));
+      targets = ex ? [ex] : []; // Antwort nur für ein Vorkommen ohne Ausnahme: ignorieren
+    } else targets = comp.getAllSubcomponents('vevent');
+    for (const ra of rv.getAllProperties('attendee')) {
+      const email = mailto(ra.getFirstValue());
+      const ps = String(ra.getParameter('partstat') || '').toUpperCase();
+      if (!email || !ps) continue;
+      for (const t of targets) {
+        const p = t.getAllProperties('attendee').find((x) => mailto(x.getFirstValue()) === email);
+        if (p && String(p.getParameter('partstat') || '').toUpperCase() !== ps) {
+          p.setParameter('partstat', ps);
+          p.removeParameter('rsvp');
+          if (!changed.find((c) => c.email === email)) changed.push({ email, partstat: ps });
+        }
+      }
+    }
+  }
+  if (!changed.length) return null;
+  touch(master);
+  return { data: comp.toString(), changed };
+}
+
+/**
+ * Eigene Antwort im eigenen Kalender festhalten (Teilnehmer-Kopie).
+ * SCHEDULE-AGENT=CLIENT, damit SOGo nicht selbst Antworten verschickt.
+ */
+function setMyPartstat(data, email, partstat) {
+  const comp = parseCal(data);
+  comp.removeAllProperties('method');
+  const me = mailto(email);
+  for (const v of comp.getAllSubcomponents('vevent')) {
+    for (const p of v.getAllProperties('attendee')) {
+      if (mailto(p.getFirstValue()) === me) { p.setParameter('partstat', partstat); p.removeParameter('rsvp'); }
+      p.setParameter('schedule-agent', 'CLIENT');
+    }
+    const o = v.getFirstProperty('organizer');
+    if (o) o.setParameter('schedule-agent', 'CLIENT');
+  }
+  return comp.toString();
+}
+
+/** Ausnahmen (RECURRENCE-ID) aus occData in die gespeicherte Serie übernehmen (ersetzt gleiche Vorkommen). */
+function mergeOccurrence(seriesData, occData) {
+  const comp = parseCal(seriesData);
+  const occ = parseCal(occData);
+  const master = masterOf(comp);
+  for (const v of occ.getAllSubcomponents('vevent')) {
+    const rid = v.getFirstPropertyValue('recurrence-id');
+    if (!rid || !master) continue;
+    const old = findException(comp, master, rid);
+    if (old) comp.removeSubcomponent(old);
+    comp.addSubcomponent(new ICAL.Component(v.toJSON()));
+  }
+  for (const tz of occ.getAllSubcomponents('vtimezone')) {
+    const id = tz.getFirstPropertyValue('tzid');
+    if (!comp.getAllSubcomponents('vtimezone').some((x) => x.getFirstPropertyValue('tzid') === id)) comp.addSubcomponent(new ICAL.Component(tz.toJSON()));
+  }
+  return comp.toString();
+}
+
+/** Teilnehmer-Liste eines gespeicherten Termins (Organisator, Teilnehmer, Sequenz). */
+function participantsOf(data) {
+  const comp = parseCal(data);
+  const master = masterOf(comp);
+  if (!master) return { organizer: null, attendees: [], title: '' };
+  return { organizer: organizerOf(master), attendees: attendeesOf(master), title: master.getFirstPropertyValue('summary') || '' };
 }
 
 /** Bereitet eine per Mail empfangene .ics zum Import vor (METHOD entfernen). */
@@ -211,6 +674,10 @@ function prepareImport(data) {
   comp.removeAllProperties('method');
   const vevent = comp.getFirstSubcomponent('vevent');
   if (!vevent) throw new Error('Keine Termindaten gefunden');
+  // importierte Einladung: der CalDAV-Server soll keine eigenen Einladungen/Antworten verschicken
+  for (const v of comp.getAllSubcomponents('vevent')) {
+    for (const p of [...v.getAllProperties('attendee'), ...v.getAllProperties('organizer')]) p.setParameter('schedule-agent', 'CLIENT');
+  }
   let uid = vevent.getFirstPropertyValue('uid');
   if (!uid) {
     uid = crypto.randomUUID();
@@ -219,4 +686,7 @@ function prepareImport(data) {
   return { uid, data: comp.toString(), summary: vevent.getFirstPropertyValue('summary') || '' };
 }
 
-module.exports = { expand, buildEvent, prepareImport };
+module.exports = {
+  expand, buildEvent, deleteOccurrence, prepareImport,
+  itipMessage, itipReply, parseInvitation, mergeOccurrence, applyReply, setMyPartstat, participantsOf, rruleInfo,
+};

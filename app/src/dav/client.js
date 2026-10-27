@@ -301,6 +301,27 @@ class DavClient {
       .map((i) => ({ href: new URL(i.url).pathname, url: i.url, etag: text(i.props.getetag), data: text(i.props['address-data']) }));
   }
 
+  /** Termin anhand der UID in einem Kalender suchen (zuerst <uid>.ics, dann per REPORT). */
+  async findByUid(calUrl, uid) {
+    const base = calUrl.endsWith('/') ? calUrl : `${calUrl}/`;
+    const direct = `${base}${encodeURIComponent(uid)}.ics`;
+    try {
+      const o = await this.getObject(direct);
+      if (o.data && o.data.includes(uid)) return { url: direct, etag: o.etag, data: o.data };
+    } catch (err) {
+      if (err.status && err.status !== 404 && err.status !== 410) throw err;
+    }
+    const body = `<?xml version="1.0" encoding="utf-8"?><c:calendar-query ${NS}>`
+      + '<d:prop><d:getetag/><c:calendar-data/></d:prop>'
+      + '<c:filter><c:comp-filter name="VCALENDAR"><c:comp-filter name="VEVENT">'
+      + `<c:prop-filter name="UID"><c:text-match collation="i;octet">${xmlEscape(uid)}</c:text-match></c:prop-filter>`
+      + '</c:comp-filter></c:comp-filter></c:filter></c:calendar-query>';
+    let items = [];
+    try { items = await this.multistatus('REPORT', base, body, 1); } catch (_) { return null; }
+    const hit = items.find((i) => i.props['calendar-data'] && text(i.props['calendar-data']).includes(uid));
+    return hit ? { url: hit.url, etag: text(hit.props.getetag), data: text(hit.props['calendar-data']) } : null;
+  }
+
   async getObject(url) {
     const res = await this.request('GET', url);
     if (!res.ok) throw new DavError(res.status, `Objekt nicht gefunden (HTTP ${res.status})`);

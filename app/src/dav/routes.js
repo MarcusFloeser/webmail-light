@@ -6,6 +6,7 @@ const db = require('../db');
 const { encrypt } = require('../crypto');
 const svc = require('./service');
 const ics = require('./ics');
+const scheduling = require('./scheduling');
 const vcard = require('./vcard');
 const { DavClient } = require('./client');
 
@@ -100,6 +101,7 @@ function router() {
     if (end - start > 400 * 86400000) return res.status(400).json({ error: 'Zeitraum zu groß' });
     const hidden = new Set(String(req.query.hidden || '').split(',').filter(Boolean));
     const sources = await svc.getSources(req.user);
+    const mine = new Set(await scheduling.myEmails(req.user));
     const events = [];
     const errors = [];
     await Promise.all(sources.map(async (s) => {
@@ -117,8 +119,17 @@ function router() {
             let occ = [];
             try { occ = ics.expand(o.data, start, end); } catch (err) { continue; }
             for (const e of occ) {
+              let role = null;
+              let myStatus = null;
+              if (e.organizer && e.attendees && e.attendees.length) {
+                const me = e.attendees.find((a) => mine.has(a.email));
+                role = mine.has(e.organizer.email) ? 'organizer' : (me ? 'attendee' : null);
+                myStatus = me ? me.partstat : null;
+              }
               events.push({
                 ...e,
+                role,
+                myStatus,
                 id: `${o.url}#${e.recurrenceId || ''}`,
                 url: o.url,
                 etag: o.etag,
@@ -137,11 +148,17 @@ function router() {
     res.json({ events, errors });
   }));
 
+  /** Teilnehmer/Organisator werden in der Webmail nicht bearbeitet (keine eigenen Einladungen) – unverändert lassen. */
+  const stripScheduling = (fields) => {
+    for (const k of ['attendees', 'organizer', 'notify', 'identityId', 'tz']) delete fields[k];
+    return fields;
+  };
+
   r.post('/events', wrap(async (req, res) => {
     const { sourceId, calendar, ...fields } = req.body;
     const source = await svc.getSource(req.user, sourceId);
     const cal = collUrl(source, calendar);
-    const { uid, data } = ics.buildEvent(fields);
+    const { uid, data } = ics.buildEvent(stripScheduling(fields));
     const url = `${cal}${encodeURIComponent(uid)}.ics`;
     const etag = await source.client.putObject(url, data, 'text/calendar');
     res.json({ url, etag });
@@ -152,7 +169,7 @@ function router() {
     const source = await svc.getSource(req.user, sourceId);
     const target = source.client.assertOwnUrl(url);
     const current = await source.client.getObject(target);
-    const { data } = ics.buildEvent(fields, current.data);
+    const { data } = ics.buildEvent(stripScheduling(fields), current.data);
     const useEtag = etag || current.etag;
     // In anderen Kalender verschieben?
     if (calendar && !target.startsWith(collUrl(source, calendar))) {
@@ -165,10 +182,54 @@ function router() {
     res.json({ url: target, etag: newEtag });
   }));
 
+  /**
+   * Löschen. scope=this&recurrenceId=…: nur dieses Vorkommen einer Serie.
+   * notify=1: bei einer Einladung Absage (DECLINED) an den Organisator senden.
+   */
   r.delete('/events', wrap(async (req, res) => {
     const source = await svc.getSource(req.user, req.query.sourceId);
-    await source.client.deleteObject(source.client.assertOwnUrl(req.query.url), req.query.etag || undefined);
-    res.json({ ok: true });
+    const target = source.client.assertOwnUrl(req.query.url);
+    const notify = req.query.notify === '1';
+    const tz = req.query.tz;
+    let current = null;
+    if (notify || req.query.scope === 'this') current = await source.client.getObject(target);
+    let notified = null;
+    if (req.query.scope === 'this' && req.query.recurrenceId) {
+      const upd = ics.deleteOccurrence(current.data, req.query.recurrenceId);
+      if (notify) notified = await notifyDelete(req, current.data, upd.recurrenceId, tz);
+      await source.client.putObject(target, upd.data, 'text/calendar', current.etag || undefined);
+      return res.json({ ok: true, notified });
+    }
+    if (notify) notified = await notifyDelete(req, current.data, null, tz);
+    await source.client.deleteObject(target, req.query.etag || undefined);
+    res.json({ ok: true, notified });
+  }));
+
+  async function notifyDelete(req, data, recurrenceId, tz) {
+    try {
+      const r2 = await scheduling.sendReply(req.user, data, 'DECLINED', { recurrenceId, tz });
+      return { replied: r2.sent };
+    } catch (err) {
+      return { error: err.message };
+    }
+  }
+
+  /** Eigene Antwort auf eine Einladung ändern (aus dem Kalender). body: { sourceId, url, partstat, notify, tz, comment } */
+  r.post('/events/respond', wrap(async (req, res) => {
+    const partstat = String(req.body.partstat || '').toUpperCase();
+    if (!['ACCEPTED', 'TENTATIVE', 'DECLINED'].includes(partstat)) return res.status(400).json({ error: 'Ungültige Antwort' });
+    const source = await svc.getSource(req.user, req.body.sourceId);
+    const target = source.client.assertOwnUrl(req.body.url);
+    const current = await source.client.getObject(target);
+    const inv = ics.parseInvitation(current.data, await scheduling.myEmails(req.user));
+    if (!inv.me) return res.status(400).json({ error: 'Du bist bei diesem Termin nicht als Teilnehmer eingetragen' });
+    const data = ics.setMyPartstat(current.data, inv.me, partstat);
+    const etag = await source.client.putObject(target, data, 'text/calendar', current.etag || undefined);
+    let notified = null;
+    if (req.body.notify !== false) {
+      try { notified = await scheduling.sendReply(req.user, data, partstat, { tz: req.body.tz, comment: req.body.comment }); } catch (err) { notified = { error: err.message }; }
+    }
+    res.json({ ok: true, etag, partstat, notified });
   }));
 
   // ------------------------------------------------------------ Kontakte

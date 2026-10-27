@@ -241,4 +241,35 @@ async function saveDraft(body, user) {
   return { ok: true, draftMessageId: mail.messageId };
 }
 
-module.exports = { send, saveDraft, testSmtp, findSpecialFolder, removeDraft, replyFolderFor, buildMail };
+/**
+ * Kalender-Nachricht (iMIP: Einladung, Absage, Antwort) über das SMTP-Konto einer Identität senden.
+ * ident: Zeile aus loadIdentity; opts: { to: [{ email, name }], subject, text, method, ics }
+ */
+async function sendItip(ident, { to, subject, text, html, method, ics }) {
+  const list = (to || []).filter((r) => r && r.email);
+  if (!list.length) return { ok: true, sent: 0 };
+  const domain = String(ident.identity_email).split('@')[1] || 'localhost';
+  const transport = smtpTransport(ident);
+  try {
+    await transport.sendMail({
+      from: { name: ident.identity_name || '', address: ident.identity_email },
+      to: list.map((r) => (r.name ? { name: r.name, address: r.email } : r.email)),
+      subject,
+      text,
+      html,
+      messageId: `<${crypto.randomUUID()}@${domain}>`,
+      date: new Date(),
+      headers: { 'User-Agent': 'Webmail' },
+      icalEvent: { method, content: ics, filename: 'invite.ics' },
+    });
+  } catch (err) {
+    const e = new Error(`Versand fehlgeschlagen: ${friendlyError(err, { kind: 'smtp', port: ident.smtp_port, security: ident.smtp_security })}`);
+    e.status = 502;
+    throw e;
+  } finally {
+    transport.close();
+  }
+  return { ok: true, sent: list.length };
+}
+
+module.exports = { sendItip, loadIdentity, send, saveDraft, testSmtp, findSpecialFolder, removeDraft, replyFolderFor, buildMail };

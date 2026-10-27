@@ -27,20 +27,32 @@ function normalizeMessageId(id) {
   return t ? `<${t.replace(/^<|>$/g, '')}>` : null;
 }
 
-/** Prüft rekursiv eine IMAP-BODYSTRUCTURE auf Anhänge. */
-function hasAttachments(node) {
+/** Signaturteile (S/MIME, PGP) – technisch ein Anhang, für den Benutzer keiner. */
+const SIGNATURE_TYPES = ['application/pkcs7-signature', 'application/x-pkcs7-signature', 'application/pgp-signature'];
+
+/**
+ * Prüft rekursiv eine IMAP-BODYSTRUCTURE auf Anhänge – so, wie sie auch in der Mail-Ansicht erscheinen:
+ *  - Bilder/Teile mit Content-ID in multipart/related sind eingebettet (z. B. Logo in der Signatur) → kein Anhang
+ *  - Signaturen (smime.p7s, signature.asc) → kein Anhang
+ *  - Content-Disposition „attachment“, Kalendereinladungen und benannte Dateien → Anhang
+ */
+function hasAttachments(node, inRelated = false) {
   if (!node) return false;
-  if (Array.isArray(node.childNodes) && node.childNodes.length) {
-    return node.childNodes.some(hasAttachments);
-  }
   const type = String(node.type || '').toLowerCase();
+  if (Array.isArray(node.childNodes) && node.childNodes.length) {
+    const related = inRelated || type === 'multipart/related';
+    return node.childNodes.some((child) => hasAttachments(child, related));
+  }
+  if (SIGNATURE_TYPES.includes(type)) return false;
   const disp = String(node.disposition || '').toLowerCase();
   const filename = (node.dispositionParameters && node.dispositionParameters.filename)
     || (node.parameters && node.parameters.name);
+  // eingebettet und im Text referenziert (cid:) – zeigt die Mail-Ansicht im Text, nicht als Anhang
+  if (inRelated && node.id) return false;
   if (disp === 'attachment') return true;
   if (type === 'text/calendar') return true;
-  if (filename && !type.startsWith('text/') && disp !== 'inline') return true;
-  if (filename && type.startsWith('application/')) return true;
+  if (filename && !type.startsWith('text/')) return true;
+  if (filename && disp === 'attachment') return true;
   return false;
 }
 
@@ -125,6 +137,6 @@ function makePreview(text) {
 }
 
 module.exports = {
-  extractMessageIds, headerValue, normalizeMessageId, hasAttachments, guessSpecialUse,
+  extractMessageIds, headerValue, normalizeMessageId, hasAttachments, SIGNATURE_TYPES, guessSpecialUse,
   normalizeSubject, addrList, uidRange, chunk, htmlToText, makePreview,
 };

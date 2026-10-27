@@ -1,4 +1,4 @@
-import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, timeOnly, dateInput, timeInput, parseTime } from './ui.js';
+import { h, clear, icon, iconButton, toast, modal, confirmDialog, choiceDialog, field, timeOnly, dateInput, timeInput, parseTime } from './ui.js';
 import { get, post, put, del, patch } from './api.js';
 import * as reminders from './reminders.js';
 import { notify } from './state.js';
@@ -172,10 +172,15 @@ function eventsOn(day) {
   }).sort((a, b) => (b.allDay - a.allDay) || (span(a).s - span(b).s));
 }
 
+function evStatusClass(ev) {
+  if (ev.role !== 'attendee') return '';
+  return { 'NEEDS-ACTION': 'ev-open', TENTATIVE: 'ev-maybe', DECLINED: 'ev-no' }[ev.myStatus] || '';
+}
+
 function chip(ev) {
   const { s } = span(ev);
   return h('button', {
-    type: 'button', class: `ev ${ev.allDay ? 'allday' : ''}`, style: { '--c': ev.color || '#3b6fd8' },
+    type: 'button', class: `ev ${ev.allDay ? 'allday' : ''} ${evStatusClass(ev)}`, style: { '--c': ev.color || '#3b6fd8' },
     title: `${ev.title}${ev.location ? ' · ' + ev.location : ''}`,
     onClick: (e) => { e.stopPropagation(); eventDialog(ev); },
   }, !ev.allDay ? h('span', { class: 'ev-time' }, hm(s)) : null, h('span', { class: 'ev-title' }, ev.title), ev.recurring ? ' ↻' : '');
@@ -217,7 +222,7 @@ function drawWeek() {
       h('div', { class: 'week-evs' }, list.map((ev) => {
         const { s, e } = span(ev);
         return h('button', {
-          type: 'button', class: 'wev', style: { '--c': ev.color || '#3b6fd8' },
+          type: 'button', class: `wev ${evStatusClass(ev)}`, style: { '--c': ev.color || '#3b6fd8' },
           onClick: (x) => { x.stopPropagation(); eventDialog(ev); },
         },
         h('strong', {}, ev.title),
@@ -257,6 +262,91 @@ function dayDialog(day, list) {
 
 // ====================================================================== Termin-Dialog
 
+const TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return undefined; } })();
+const RR_DAYS = [['MO', 'Mo'], ['TU', 'Di'], ['WE', 'Mi'], ['TH', 'Do'], ['FR', 'Fr'], ['SA', 'Sa'], ['SU', 'So']];
+const JS_DAY = ['SU', 'MO', 'TU', 'WE', 'TH', 'FR', 'SA'];
+const RR_UNIT = { DAILY: ['Tag', 'Tage'], WEEKLY: ['Woche', 'Wochen'], MONTHLY: ['Monat', 'Monate'], YEARLY: ['Jahr', 'Jahre'] };
+export const PARTSTAT = {
+  ACCEPTED: ['Zugesagt', '✓', 'ok'],
+  TENTATIVE: ['Vielleicht', '?', 'maybe'],
+  DECLINED: ['Abgesagt', '✕', 'no'],
+  'NEEDS-ACTION': ['Keine Antwort', '…', 'open'],
+  DELEGATED: ['Delegiert', '→', 'open'],
+};
+
+function partstatBadge(ps) {
+  const [label, sym, cls] = PARTSTAT[ps] || PARTSTAT['NEEDS-ACTION'];
+  return h('span', { class: `ps ps-${cls}`, title: label, 'aria-label': label }, sym);
+}
+
+/** Wiederholung: Häufigkeit, Intervall, Wochentage, Ende */
+function recurrenceEditor(rule, startDay) {
+  const r = rule || {};
+  const freq = h('select', { 'aria-label': 'Wiederholung' },
+    [['', 'Keine Wiederholung'], ['DAILY', 'Täglich'], ['WEEKLY', 'Wöchentlich'], ['MONTHLY', 'Monatlich'], ['YEARLY', 'Jährlich']]
+      .map(([v, l]) => h('option', { value: v, selected: (r.freq || '') === v }, l)));
+  const interval = h('input', { type: 'number', min: '1', max: '999', value: String(r.interval || 1), class: 'rr-int', 'aria-label': 'Intervall' });
+  const unit = h('span', { class: 'rr-unit' });
+  const dayBtns = RR_DAYS.map(([code, label]) => {
+    const on = r.byday && r.byday.length ? r.byday.includes(code) : false;
+    return h('button', { type: 'button', class: `rr-day${on ? ' on' : ''}`, dataset: { day: code }, 'aria-pressed': String(on),
+      onClick: (e) => { const b = e.currentTarget; b.classList.toggle('on'); b.setAttribute('aria-pressed', String(b.classList.contains('on'))); } }, label);
+  });
+  const days = h('div', { class: 'rr-days', role: 'group', 'aria-label': 'Wochentage' }, dayBtns);
+  const endMode = h('select', { 'aria-label': 'Ende der Wiederholung' },
+    h('option', { value: 'never', selected: !r.count && !r.until }, 'Endet nie'),
+    h('option', { value: 'until', selected: !!r.until }, 'Endet am'),
+    h('option', { value: 'count', selected: !!r.count }, 'Endet nach'));
+  const until = dateInput(r.until || '', { label: 'Ende der Wiederholung' });
+  const count = h('input', { type: 'number', min: '1', max: '5000', value: String(r.count || 10), class: 'rr-int', 'aria-label': 'Anzahl Termine' });
+  const countLbl = h('span', { class: 'rr-unit' }, 'Terminen');
+  const more = h('div', { class: 'rr-more' },
+    h('div', { class: 'rr-line' }, h('span', {}, 'Alle'), interval, unit),
+    days,
+    h('div', { class: 'rr-line' }, endMode, until, count, countLbl));
+  const complexNote = r.freq && r.simple === false
+    ? h('p', { class: 'hint' }, 'Diese Serie hat eine erweiterte Regel aus einem anderen Kalenderprogramm. Sie bleibt erhalten, solange du die Wiederholung hier nicht ändern.') : null;
+  let touched = false;
+  const sync = () => {
+    const f = freq.value;
+    more.hidden = !f;
+    days.hidden = f !== 'WEEKLY';
+    const n = Math.max(1, parseInt(interval.value, 10) || 1);
+    unit.textContent = f ? RR_UNIT[f][n === 1 ? 0 : 1] : '';
+    until.hidden = endMode.value !== 'until';
+    count.hidden = endMode.value !== 'count';
+    countLbl.hidden = endMode.value !== 'count';
+    if (f === 'WEEKLY' && !dayBtns.some((b) => b.classList.contains('on'))) {
+      const d = startDay();
+      const b = dayBtns.find((x) => x.dataset.day === JS_DAY[d.getDay()]);
+      if (b) { b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); }
+    }
+  };
+  for (const x of [freq, interval, endMode, count]) {
+    x.addEventListener('change', () => { touched = true; sync(); });
+    x.addEventListener('input', () => { touched = true; sync(); });
+  }
+  until.addEventListener('change', () => { touched = true; });
+  days.addEventListener('click', () => { touched = true; });
+  sync();
+  return {
+    el: h('div', { class: 'rr' }, freq, more, complexNote),
+    get changed() { return touched; },
+    value() {
+      if (!freq.value) return null;
+      const out = { freq: freq.value, interval: Math.max(1, parseInt(interval.value, 10) || 1) };
+      if (freq.value === 'WEEKLY') out.byday = dayBtns.filter((b) => b.classList.contains('on')).map((b) => b.dataset.day);
+      if (endMode.value === 'count') out.count = Math.max(1, parseInt(count.value, 10) || 1);
+      if (endMode.value === 'until' && until.value) out.until = until.value;
+      return out;
+    },
+    validate() {
+      if (freq.value && endMode.value === 'until' && (!until.value || !until.isValid())) return 'Bitte ein gültiges Enddatum für die Wiederholung angeben';
+      return null;
+    },
+  };
+}
+
 function eventDialog(ev, day) {
   if (!collections.length) { noServerHint(); return; }
   const isNew = !ev;
@@ -267,6 +357,8 @@ function eventDialog(ev, day) {
   else { s = defStart; e = new Date(defStart.getTime() + 3600000); }
   const allDayInit = ev ? ev.allDay : false;
   const endInclusive = allDayInit ? addDays(e, -1) : e;
+  const role = ev ? ev.role : null; // 'organizer' | 'attendee' | null
+  const invited = role === 'attendee';
 
   const title = h('input', { type: 'text', value: ev ? ev.title : '', placeholder: 'Titel', required: true });
   const calSel = h('select', {}, collections.map((c) => h('option', {
@@ -280,16 +372,14 @@ function eventDialog(ev, day) {
   const remCfg = reminders.settings();
   const curAlarm = !ev || ev.alarms === null || ev.alarms === undefined ? 'default' : (ev.alarms.length ? String(ev.alarms[0]) : 'none');
   const knownMinutes = reminders.REMINDER_OPTIONS.map(([m]) => String(m));
-  const reminder = h('select', {},
+  const reminder = h('select', { 'aria-label': 'Erinnerung' },
     h('option', { value: 'default', selected: curAlarm === 'default' },
       `Standard (${remCfg.defaultMinutes === null ? 'keine' : reminders.reminderLabel(remCfg.defaultMinutes)})`),
     h('option', { value: 'none', selected: curAlarm === 'none' }, 'Keine Erinnerung'),
     reminders.REMINDER_OPTIONS.map(([m, l]) => h('option', { value: String(m), selected: curAlarm === String(m) }, l)),
     curAlarm !== 'default' && curAlarm !== 'none' && !knownMinutes.includes(curAlarm)
       ? h('option', { value: curAlarm, selected: true }, reminders.reminderLabel(Number(curAlarm))) : null);
-  const rrule = h('select', {},
-    [['', 'Keine Wiederholung'], ['DAILY', 'Täglich'], ['WEEKLY', 'Wöchentlich'], ['MONTHLY', 'Monatlich'], ['YEARLY', 'Jährlich']]
-      .map(([v, l]) => h('option', { value: v, selected: ((ev && ev.rrule && ev.rrule.freq) || '') === v }, l)));
+  const rr = recurrenceEditor(ev && ev.rrule, () => (sDate.value ? parseDateOnly(sDate.value) : s));
   const loc = h('input', { type: 'text', value: ev ? ev.location : '' });
   const desc = h('textarea', { rows: 4 }, ev ? ev.description : '');
   const syncTime = () => { sTime.hidden = allDay.checked; eTime.hidden = allDay.checked; };
@@ -297,21 +387,67 @@ function eventDialog(ev, day) {
   syncTime();
   sDate.addEventListener('change', () => { if (sDate.value && eDate.value < sDate.value) eDate.value = sDate.value; });
 
-  const recurring = ev && ev.recurring;
-  if (recurring) { [sDate, sTime, eDate, eTime, allDay].forEach((x) => { x.disabled = true; }); }
+  const recurring = !!(ev && ev.recurring);
 
-  const body = h('form', { class: 'form-grid', onSubmit: (x) => x.preventDefault() },
+  // ---- Teilnehmer: nur Anzeige; bei Einladungen Antwort möglich (eigene Einladungen werden nicht erstellt)
+  let attSection = null;
+  let myAnswer = ev ? ev.myStatus : null;
+  const attList = () => h('ul', { class: 'att-list' }, ev.attendees.map((a) => h('li', {}, partstatBadge(a.partstat), ' ', a.name || a.email, a.name ? h('span', { class: 'muted' }, ` <${a.email}>`) : null)));
+  if (invited) {
+    const org = ev.organizer || {};
+    const answerBtns = ['ACCEPTED', 'TENTATIVE', 'DECLINED'].map((ps) => h('button', {
+      type: 'button', class: `btn btn-small ans ans-${PARTSTAT[ps][2]}${myAnswer === ps ? ' on' : ''}`, dataset: { ps },
+      onClick: async (x) => {
+        const b = x.currentTarget;
+        try {
+          b.disabled = true;
+          const r = await post('/events/respond', { sourceId: ev.sourceId, url: ev.url, partstat: ps, tz: TZ });
+          myAnswer = ps;
+          answerBtns.forEach((y) => y.classList.toggle('on', y.dataset.ps === ps));
+          const sent = r.notified && r.notified.sent;
+          toast(`Antwort „${PARTSTAT[ps][0]}“ gespeichert${sent ? ` und an ${org.name || org.email} gesendet` : ''}`, 'success');
+          if (r.notified && r.notified.error) toast(r.notified.error, 'error');
+          loadEvents();
+        } catch (err) { toast(err.message, 'error'); } finally { b.disabled = false; }
+      },
+    }, ps === 'ACCEPTED' ? 'Zusagen' : ps === 'TENTATIVE' ? 'Vielleicht' : 'Absagen'));
+    attSection = h('fieldset', { class: 'ev-people' },
+      h('legend', {}, 'Einladung'),
+      h('p', { class: 'small' }, 'Organisiert von ', h('strong', {}, org.name || org.email), org.name ? ` <${org.email}>` : ''),
+      h('div', { class: 'ans-row' }, h('span', { class: 'small muted' }, 'Deine Antwort:'), answerBtns),
+      attList());
+  } else if (ev && ev.attendees && ev.attendees.length) {
+    attSection = h('fieldset', { class: 'ev-people' }, h('legend', {}, 'Teilnehmer'), attList());
+  }
+
+  const body = h('form', { class: 'form-grid ev-form', onSubmit: (x) => x.preventDefault() },
     field('Titel', title),
     field('Kalender', calSel),
     h('label', { class: 'check' }, allDay, ' Ganztägig'),
     h('div', { class: 'row2' }, field('Beginn', h('div', { class: 'dt' }, sDate, sTime)), field('Ende', h('div', { class: 'dt' }, eDate, eTime))),
-    recurring ? h('p', { class: 'hint' }, 'Wiederkehrender Termin: Änderungen an Titel, Ort und Beschreibung gelten für die ganze Serie. Zeiten bitte im Ursprungstermin bzw. Kalenderprogramm ändern.') : null,
-    h('div', { class: 'row2' }, field('Wiederholung', rrule), field('Erinnerung', reminder)),
+    h('div', { class: 'row2' }, field('Wiederholung', rr.el), field('Erinnerung', reminder)),
     field('Ort', loc),
-    field('Beschreibung', desc));
+    field('Beschreibung', desc),
+    attSection);
+
+  const formTimes = () => {
+    if (!sDate.value || !sDate.isValid() || !eDate.isValid()) throw new Error('Bitte ein gültiges Datum angeben (TT.MM.JJJJ)');
+    if (!allDay.checked && ((sTime.value && !parseTime(sTime.value)) || (eTime.value && !parseTime(eTime.value)))) {
+      throw new Error('Bitte eine gültige Uhrzeit angeben (HH:MM)');
+    }
+    if (allDay.checked) return { allDay: true, start: sDate.value, end: ymd(addDays(parseDateOnly(eDate.value || sDate.value), 1)) };
+    const st = new Date(`${sDate.value}T${parseTime(sTime.value) || '09:00'}`);
+    let en = new Date(`${eDate.value || sDate.value}T${parseTime(eTime.value) || '10:00'}`);
+    if (en <= st) en = new Date(st.getTime() + 3600000);
+    return { allDay: false, start: st.toISOString(), end: en.toISOString() };
+  };
 
   const save = async () => {
     if (!title.value.trim()) { toast('Bitte einen Titel angeben', 'error'); return true; }
+    const rrErr = rr.validate();
+    if (rrErr) { toast(rrErr, 'error'); return true; }
+    let times;
+    try { times = formTimes(); } catch (err) { toast(err.message, 'error'); return true; }
     const cal = collections.find((c) => c.url === calSel.value);
     const payload = {
       sourceId: cal.sourceId,
@@ -319,34 +455,31 @@ function eventDialog(ev, day) {
       title: title.value.trim(),
       location: loc.value,
       description: desc.value,
-      rrule: rrule.value || null,
+      ...times,
       // nur senden, wenn geändert – sonst bleiben z. B. mehrere Alarme aus anderen Programmen erhalten
       reminder: reminder.value === curAlarm ? undefined
         : (reminder.value === 'default' ? null : (reminder.value === 'none' ? 'none' : Number(reminder.value))),
+      tz: TZ,
     };
-    if (!recurring) {
-      if (!sDate.value || !sDate.isValid() || !eDate.isValid()) { toast('Bitte ein gültiges Datum angeben (TT.MM.JJJJ)', 'error'); return true; }
-      if (!allDay.checked && ((sTime.value && !parseTime(sTime.value)) || (eTime.value && !parseTime(eTime.value)))) {
-        toast('Bitte eine gültige Uhrzeit angeben (HH:MM)', 'error');
-        return true;
-      }
-      payload.allDay = allDay.checked;
-      if (allDay.checked) {
-        payload.start = sDate.value;
-        payload.end = ymd(addDays(parseDateOnly(eDate.value || sDate.value), 1));
-      } else {
-        const st = new Date(`${sDate.value}T${parseTime(sTime.value) || '09:00'}`);
-        let en = new Date(`${eDate.value || sDate.value}T${parseTime(eTime.value) || '10:00'}`);
-        if (en <= st) en = new Date(st.getTime() + 3600000);
-        payload.start = st.toISOString();
-        payload.end = en.toISOString();
+    // Wiederholung nur senden, wenn neu oder geändert (erweiterte Regeln anderer Programme bleiben erhalten)
+    if (isNew || rr.changed) payload.rrule = rr.value();
+    if (!isNew && ev.sourceId !== cal.sourceId) { toast('Verschieben zwischen verschiedenen Servern ist nicht möglich', 'error'); return true; }
+
+    if (!isNew && recurring) {
+      payload.recurrenceId = ev.recurrenceId;
+      const ruleChanged = rr.changed;
+      if (!ruleChanged) {
+        const pick = await choiceDialog('Serientermin ändern', `„${ev.title}“ ist ein wiederkehrender Termin. Was möchtest du ändern?`, [
+          { value: 'this', label: 'Nur diesen Termin' },
+          { value: 'all', label: 'Alle Termine der Serie', primary: true },
+        ]);
+        if (!pick) return true;
+        if (pick.value === 'this') { payload.scope = 'this'; delete payload.calendar; }
       }
     }
+
     if (isNew) await post('/events', payload);
-    else {
-      if (ev.sourceId !== cal.sourceId) { toast('Verschieben zwischen verschiedenen Servern ist nicht möglich', 'error'); return true; }
-      await put('/events', { ...payload, url: ev.url, etag: ev.etag });
-    }
+    else await put('/events', { ...payload, url: ev.url, etag: ev.etag });
     toast('Termin gespeichert', 'success');
     reminders.reschedule();
     notify('events');
@@ -354,20 +487,41 @@ function eventDialog(ev, day) {
     return false;
   };
 
+  const remove = async () => {
+    const checkbox = invited ? {
+      label: `Absage an ${(ev.organizer && (ev.organizer.name || ev.organizer.email)) || 'den Organisator'} senden`,
+      checked: true,
+    } : null;
+    let pick;
+    if (recurring) {
+      pick = await choiceDialog('Serientermin löschen', `„${ev.title}“ ist ein wiederkehrender Termin.`, [
+        { value: 'this', label: 'Nur diesen Termin', danger: true },
+        { value: 'all', label: 'Ganze Serie', danger: true },
+      ], { checkbox });
+    } else {
+      pick = await choiceDialog('Termin löschen', `„${ev.title}“ löschen?`, [{ value: 'all', label: 'Löschen', danger: true }], { checkbox });
+    }
+    if (!pick) return true;
+    const q = { sourceId: ev.sourceId, url: ev.url, etag: ev.etag };
+    if (pick.value === 'this') { q.scope = 'this'; q.recurrenceId = ev.recurrenceId; delete q.etag; }
+    if (pick.checked) { q.notify = '1'; q.tz = TZ; }
+    const r = await del('/events', q);
+    const n = r && r.notified;
+    if (n && n.error) toast(`Gelöscht, aber Absage nicht verschickt: ${n.error}`, 'error');
+    else if (n && n.replied) toast('Termin gelöscht – Absage an den Organisator gesendet');
+    else toast(pick.value === 'this' ? 'Termin aus der Serie gelöscht' : 'Termin gelöscht');
+    reminders.reschedule();
+    notify('events');
+    loadEvents();
+    return false;
+  };
+
   modal({
-    title: isNew ? 'Neuer Termin' : 'Termin bearbeiten',
+    title: isNew ? 'Neuer Termin' : (invited ? 'Einladung' : 'Termin bearbeiten'),
     body,
     wide: true,
     actions: [
-      !isNew ? { label: 'Löschen', danger: true, onClick: async () => {
-        if (!(await confirmDialog('Termin löschen', recurring ? 'Die ganze Terminserie löschen?' : `„${ev.title}“ löschen?`, { confirmLabel: 'Löschen' }))) return true;
-        await del('/events', { sourceId: ev.sourceId, url: ev.url, etag: ev.etag });
-        toast('Termin gelöscht');
-        reminders.reschedule();
-        notify('events');
-        loadEvents();
-        return false;
-      } } : null,
+      !isNew ? { label: 'Löschen', danger: true, onClick: remove } : null,
       { label: 'Abbrechen' },
       { label: 'Speichern', primary: true, onClick: save },
     ].filter(Boolean),

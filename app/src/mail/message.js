@@ -1,5 +1,7 @@
 'use strict';
 
+const { SIGNATURE_TYPES } = require('../imap/util');
+
 /** Laden + Parsen kompletter Nachrichten (Body, Anhänge) mit kleinem LRU-Cache. */
 const { simpleParser } = require('mailparser');
 const db = require('../db');
@@ -100,7 +102,8 @@ function bodyPayload(msg, parsed) {
     html,
     text: parsed.text || (parsed.html ? htmlToText(parsed.html) : ''),
     hasRemote,
-    attachments: attachments.filter((a) => !a.inline || !html),
+    // eingebettete Bilder (im Text sichtbar) und Signaturen (smime.p7s) nicht als Anhang zeigen
+    attachments: attachments.filter((a) => (!a.inline || !html) && !SIGNATURE_TYPES.includes(String(a.contentType || '').toLowerCase())),
     calendar: attachments.filter((a) => /^text\/calendar/i.test(a.contentType) || /\.ics$/i.test(a.filename)).map((a) => a.idx),
     listUnsubscribe: unsubscribeLink(listUnsub),
   };

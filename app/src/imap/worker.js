@@ -13,7 +13,10 @@ const hub = require('../hub');
 const { decrypt } = require('../crypto');
 const { imapConnectOptions, friendlyError } = require('../tls');
 const store = require('./store');
-const { guessSpecialUse, uidRange, chunk } = require('./util');
+const { guessSpecialUse, uidRange, chunk, hasAttachments } = require('./util');
+
+// Version der Anhang-Erkennung; ältere Ordner werden einmalig neu geprüft
+const ATTACH_REV = 1;
 
 const FETCH_QUERY = {
   uid: true,
@@ -350,6 +353,15 @@ class AccountWorker {
         }
       }
 
+      // 3b) Einmalig: Anhang-Symbol bestehender Mails mit der verbesserten Erkennung neu bestimmen
+      if ((folder.attach_rev || 0) < ATTACH_REV && localSet.size) {
+        try {
+          if (await this.recheckAttachments(c, folder)) changed = true;
+        } catch (err) {
+          console.warn(`[imap ${this.id}] Anhang-Prüfung ${path}: ${err.message}`);
+        }
+      }
+
       const unseenUids = mb.exists ? ((await c.search({ seen: false }, { uid: true })) || []) : [];
       mbInfo = {
         uidValidity,
@@ -395,6 +407,23 @@ class AccountWorker {
     if (changed || folder.unseen !== mbInfo.unseen || folder.total !== mbInfo.total) {
       this.emitFolder(folder.id, mbInfo, changed, newForNotify);
     }
+  }
+
+  /** Bestehende Mails mit Anhang-Symbol neu prüfen (nur Struktur laden, kein Inhalt). → true, wenn sich etwas geändert hat */
+  async recheckAttachments(c, folder) {
+    const rows = await db.many('SELECT uid FROM messages WHERE folder_id = $1 AND has_attachments', [folder.id]);
+    const clear = [];
+    for (const part of chunk(rows.map((r) => Number(r.uid)).sort((a, b) => a - b), 500)) {
+      for await (const m of c.fetch(uidRange(part), { uid: true, bodyStructure: true }, { uid: true })) {
+        if (!hasAttachments(m.bodyStructure)) clear.push(m.uid);
+      }
+    }
+    if (clear.length) {
+      await db.query('UPDATE messages SET has_attachments = false WHERE folder_id = $1 AND uid = ANY($2::bigint[])', [folder.id, clear]);
+    }
+    await db.query('UPDATE folders SET attach_rev = $2 WHERE id = $1', [folder.id, ATTACH_REV]);
+    if (clear.length) console.log(`[imap ${this.id}] ${folder.path}: Anhang-Symbol bei ${clear.length} Mail(s) korrigiert`);
+    return clear.length > 0;
   }
 
   emitFolder(folderId, info, changed, newMessages) {

@@ -58,6 +58,7 @@ async function main() {
   app.use('/api', auth.requireAuth, mailRoutes.router());
   app.use('/api', auth.requireAuth, davRoutes.router());
   app.use('/api', auth.requireAuth, require('./admin-domains').router());
+  app.use('/api', auth.requireAuth, require('./sieve/routes').router());
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unbekannter Endpunkt' }));
 
   // Oberfläche: versioniert unter /v/<kennung>/ (dauerhaft cachebar), index.html immer frisch

@@ -14,10 +14,12 @@ export async function render(main, route) {
   const c = h('div', { class: 'settings-view' },
     h('nav', { class: 'settings-tabs' },
       h('a', { href: '#/admin', class: section === 'users' ? 'active' : '' }, 'Benutzer'),
-      h('a', { href: '#/admin/domains', class: section === 'domains' ? 'active' : '' }, 'Domains & Mailserver')),
+      h('a', { href: '#/admin/domains', class: section === 'domains' ? 'active' : '' }, 'Domains & Mailserver'),
+      h('a', { href: '#/admin/security', class: section === 'security' ? 'active' : '' }, 'Sicherheit')),
     content);
   clear(main, c);
   if (section === 'domains') { await domainsSection(main, content); return; }
+  if (section === 'security') { await securitySection(main, content); return; }
   let users;
   try {
     users = (await get('/admin/users')).users;
@@ -171,13 +173,61 @@ async function domainsSection(main, content) {
     }, 'Bestehende Konten jetzt zuordnen') : null);
 }
 
+// ====================================================================== Anmeldeschutz
+
+async function securitySection(main, content) {
+  let d;
+  try { d = await get('/admin/security'); } catch (err) { clear(content, h('div', { class: 'banner banner-error' }, err.message)); return; }
+  const reload = () => render(main, { parts: ['admin', 'security'] });
+  const unblock = async (body, label) => {
+    try { await post('/admin/security/unblock', body); toast(`${label} entsperrt`, 'success'); reload(); } catch (err) { toast(err.message, 'error'); }
+  };
+  const L = d.limits;
+  const kindLabel = { login: 'Anmeldung', dav: 'Kalender/Kontakte', password: 'Passwort ändern' };
+  clear(content,
+    h('div', { class: 'section-head' }, h('h2', {}, 'Schutz vor Passwort-Raten'),
+      h('button', { class: 'btn', type: 'button', onClick: reload }, icon('refresh', 16), 'Aktualisieren')),
+    d.proxyWarning ? h('div', { class: 'banner banner-error' },
+      `Alle Anfragen scheinen von ${d.yourIp} zu kommen (interne Adresse). Läuft die Webmail hinter einem Reverse-Proxy, `
+      + 'muss in der .env TRUST_PROXY=true gesetzt sein – sonst würde eine Sperre alle Benutzer gleichzeitig treffen.') : null,
+    h('p', { class: 'muted small' },
+      `Nach ${L.perAccount} Fehlversuchen für ein Konto wird die Adresse für dieses Konto ${L.accountWindowMin} Minuten gesperrt, `
+      + `nach ${L.perIp} Fehlversuchen von einer Adresse (beliebige Konten) ${L.ipWindowMin} Minuten ganz. `
+      + 'Von anderen Adressen bleibt die Anmeldung möglich – ein Angreifer kann Benutzer so nicht aussperren. '
+      + `Deine Adresse: ${d.yourIp}${d.whitelist ? ` · Ausgenommen: ${d.whitelist}` : ''}`),
+    h('div', { class: 'stat-row' },
+      h('div', { class: 'stat' }, h('strong', {}, String(d.last24h.n)), h('span', {}, 'Fehlversuche in 24 h')),
+      h('div', { class: 'stat' }, h('strong', {}, String(d.last24h.ips)), h('span', {}, 'Adressen')),
+      h('div', { class: 'stat' }, h('strong', {}, String(d.locks.length)), h('span', {}, 'aktive Sperren'))),
+    h('h3', {}, 'Aktive Sperren'),
+    d.locks.length ? h('table', { class: 'data-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Adresse'), h('th', {}, 'Konto'), h('th', {}, 'Fehlversuche'), h('th', {}, 'Gesperrt bis'), h('th', {}, ''))),
+      h('tbody', {}, d.locks.map((l) => h('tr', {},
+        h('td', {}, h('code', {}, l.ip)),
+        h('td', {}, l.kind === 'ip' ? h('span', { class: 'muted' }, `alle Konten (${l.accounts} versucht)`) : l.username),
+        h('td', {}, String(l.count)),
+        h('td', { class: 'nowrap' }, dateTime(l.until)),
+        h('td', { class: 'row-actions' }, h('button', { class: 'btn btn-small', type: 'button',
+          onClick: () => unblock(l.kind === 'ip' ? { ip: l.ip } : { ip: l.ip, username: l.username }, l.kind === 'ip' ? l.ip : l.username) }, 'Entsperren')))))) 
+      : h('p', { class: 'muted' }, 'Keine Sperren.'),
+    h('h3', { style: { marginTop: '24px' } }, 'Letzte Fehlversuche'),
+    d.recent.length ? h('table', { class: 'data-table' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Zeit'), h('th', {}, 'Adresse'), h('th', {}, 'Konto'), h('th', {}, 'Art'))),
+      h('tbody', {}, d.recent.map((f) => h('tr', {},
+        h('td', { class: 'nowrap small' }, dateTime(f.at)),
+        h('td', {}, h('code', {}, f.ip)),
+        h('td', {}, f.username || '–'),
+        h('td', { class: 'small muted' }, kindLabel[f.kind] || f.kind)))))
+      : h('p', { class: 'muted' }, 'Keine Fehlversuche in den letzten zwei Tagen.'));
+}
+
 function secOptions(value) {
   return [['', 'Automatisch (nach Port)'], ['ssl', 'SSL/TLS'], ['starttls', 'STARTTLS'], ['none', 'Keine (unverschlüsselt)']]
     .map(([v, l]) => h('option', { value: v, selected: v === (value || '') }, l));
 }
 
 function domainDialog(d, done) {
-  const v = d || { domain: '', imapHost: '', imapPort: 993, imapSecurity: '', smtpHost: '', smtpPort: 587, smtpSecurity: '', loginFormat: 'email', allowInsecureTls: false, davUrl: '', note: '' };
+  const v = d || { domain: '', imapHost: '', imapPort: 993, imapSecurity: '', smtpHost: '', smtpPort: 587, smtpSecurity: '', loginFormat: 'email', allowInsecureTls: false, davUrl: '', note: '', sievePort: 4190 };
   const result = h('div', { class: 'test-result' });
   const form = h('form', { class: 'form-grid' },
     h('div', { class: 'row2' },
@@ -199,6 +249,8 @@ function domainDialog(d, done) {
         h('option', { value: 'local', selected: v.loginFormat === 'local' }, 'Nur Teil vor dem @ (name)'))),
       field('Kalender & Kontakte (optional)', h('input', { name: 'davUrl', value: v.davUrl, placeholder: 'https://cloud.example.ch/remote.php/dav' }),
         'Wird beim Login automatisch mit denselben Zugangsdaten eingebunden.'),
+      field('Filter & Abwesenheit (Sieve-Port)', h('input', { name: 'sievePort', type: 'number', value: v.sievePort ?? 4190, min: 0, max: 65535 }),
+        'ManageSieve auf dem IMAP-Server (mailcow/Dovecot: 4190). 0 = ausgeschaltet.'),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'allowInsecureTls', checked: v.allowInsecureTls }), ' Ungültige/selbstsignierte Zertifikate akzeptieren (z. B. interner Server)')),
     h('fieldset', {}, h('legend', {}, 'Verbindung testen'),
       h('p', { class: 'muted small' }, 'Ohne Zugangsdaten wird nur die Erreichbarkeit geprüft. Mit einer Test-Adresse und deren Passwort zusätzlich die Anmeldung.'),

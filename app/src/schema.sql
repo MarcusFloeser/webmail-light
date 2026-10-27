@@ -178,3 +178,20 @@ CREATE TABLE IF NOT EXISTS app_settings (
   key    TEXT PRIMARY KEY,
   value  JSONB NOT NULL
 );
+
+-- Fehlgeschlagene Anmeldungen (Schutz gegen Passwort-Raten); ältere Einträge werden laufend gelöscht
+CREATE TABLE IF NOT EXISTS login_failures (
+  id        BIGSERIAL PRIMARY KEY,
+  ip        TEXT NOT NULL,
+  username  TEXT NOT NULL DEFAULT '',
+  kind      TEXT NOT NULL DEFAULT 'login',   -- login | dav | password
+  at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS login_failures_ip_idx ON login_failures(ip, at);
+CREATE INDEX IF NOT EXISTS login_failures_user_idx ON login_failures(username, at);
+
+-- Sieve (Filter/Abwesenheit): Port des ManageSieve-Dienstes pro Domain, 0 = aus
+ALTER TABLE mail_domains ADD COLUMN IF NOT EXISTS sieve_port INT NOT NULL DEFAULT 4190;
+
+-- Anhang-Erkennung verbessert (eingebettete Bilder, Signaturen): bestehende Mails einmalig neu prüfen
+ALTER TABLE folders ADD COLUMN IF NOT EXISTS attach_rev INT NOT NULL DEFAULT 0;

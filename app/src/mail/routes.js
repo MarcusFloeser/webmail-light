@@ -11,6 +11,7 @@ const message = require('./message');
 const compose = require('./compose');
 const davService = require('../dav/service');
 const ics = require('../dav/ics');
+const scheduling = require('../dav/scheduling');
 const domains = require('../domains');
 
 const wrap = (fn) => (req, res, next) => fn(req, res, next).catch(next);
@@ -609,6 +610,133 @@ function router() {
     }
     res.json({ ok: true, summary });
   }));
+
+  // ================================================================== Einladungen (iMIP)
+
+  async function invitationOf(req) {
+    const msg = await message.getOwned(parseInt(req.params.id, 10), req.user.id);
+    const parsed = await message.loadParsed(msg);
+    const list = (parsed.attachments || []).map((a, idx) => ({ a, idx }))
+      .filter(({ a }) => /^text\/calendar/i.test(a.contentType || '') || /\.ics$/i.test(a.filename || ''));
+    // Teil mit METHOD bevorzugen
+    const pick = list.find(({ a }) => /METHOD:/i.test(a.content.toString('utf8'))) || list[0];
+    if (!pick) throw httpError(404, 'Diese Nachricht enthält keine Einladung');
+    const data = pick.a.content.toString('utf8');
+    let inv;
+    try { inv = ics.parseInvitation(data, await scheduling.myEmails(req.user)); } catch (err) { throw httpError(400, `Einladung nicht lesbar: ${err.message}`); }
+    return { msg, data, inv, idx: pick.idx };
+  }
+
+  /** Einladung lesen + Stand im eigenen Kalender */
+  r.get('/messages/:id/invitation', wrap(async (req, res) => {
+    const { inv, idx, data } = await invitationOf(req);
+    let stored = null;
+    try {
+      const hit = await scheduling.findEvent(req.user, inv.uid);
+      if (hit) {
+        const mineInv = ics.parseInvitation(hit.data, await scheduling.myEmails(req.user));
+        stored = {
+          sourceId: hit.source.id, calendar: hit.calendar.url, calendarName: hit.calendar.name, url: hit.url,
+          myStatus: mineInv.myStatus, sequence: mineInv.sequence, attendees: mineInv.attendees,
+          organizer: mineInv.organizer,
+        };
+        // REPLY: ist die Antwort schon übernommen?
+        if (inv.method === 'REPLY') {
+          stored.replyApplied = !ics.applyReply(hit.data, data);
+        }
+      }
+    } catch (_) { /* kein Kalender erreichbar */ }
+    res.json({ ...inv, attachmentIdx: idx, stored, ruleText: scheduling.describeRule(inv.rrule) });
+  }));
+
+  /**
+   * Auf Einladung antworten. body: { partstat, sourceId, calendar, notify (Standard: ja), comment, tz }
+   * Zusagen/Vorbehalt: Termin wird im Kalender eingetragen bzw. aktualisiert. Absagen: Termin wird entfernt.
+   */
+  r.post('/messages/:id/invitation/respond', wrap(async (req, res) => {
+    const partstat = String(req.body.partstat || '').toUpperCase();
+    if (!['ACCEPTED', 'TENTATIVE', 'DECLINED'].includes(partstat)) throw httpError(400, 'Ungültige Antwort');
+    const { inv, data } = await invitationOf(req);
+    if (inv.method !== 'REQUEST') throw httpError(400, 'Auf diese Nachricht kann nicht geantwortet werden');
+    if (!inv.me) throw httpError(400, 'Du stehst nicht auf der Teilnehmerliste dieser Einladung');
+    const existing = await scheduling.findEvent(req.user, inv.uid);
+    let mineData = ics.setMyPartstat(data, inv.me, partstat);
+    if (existing && inv.recurrenceId) {
+      // Einladung nur für ein Vorkommen: in die vorhandene Serie einfügen
+      mineData = mergeOccurrence(existing.data, mineData);
+    }
+    let calendarName = null;
+    if (partstat === 'DECLINED') {
+      if (existing && !inv.recurrenceId) await existing.source.client.deleteObject(existing.url, existing.etag || undefined);
+      else if (existing) await existing.source.client.putObject(existing.url, mineData, 'text/calendar', existing.etag || undefined);
+    } else if (existing) {
+      await existing.source.client.putObject(existing.url, mineData, 'text/calendar', existing.etag || undefined);
+      calendarName = existing.calendar.name;
+    } else {
+      const { source, cal, name } = await targetCalendar(req);
+      await source.client.putObject(`${cal}${encodeURIComponent(inv.uid)}.ics`, mineData, 'text/calendar');
+      calendarName = name;
+    }
+    let notified = null;
+    if (req.body.notify !== false) {
+      try {
+        notified = await scheduling.sendReply(req.user, data, partstat, { recurrenceId: inv.recurrenceId, tz: req.body.tz, comment: req.body.comment });
+      } catch (err) { notified = { error: err.message }; }
+    }
+    res.json({ ok: true, partstat, calendarName, notified });
+  }));
+
+  /** Antwort eines Teilnehmers (REPLY) in den eigenen Termin übernehmen */
+  r.post('/messages/:id/invitation/apply', wrap(async (req, res) => {
+    const { inv, data } = await invitationOf(req);
+    if (inv.method !== 'REPLY') throw httpError(400, 'Keine Antwort auf eine Einladung');
+    const existing = await scheduling.findEvent(req.user, inv.uid);
+    if (!existing) return res.json({ ok: false, reason: 'Der Termin ist in deinen Kalendern nicht (mehr) vorhanden' });
+    const upd = ics.applyReply(existing.data, data);
+    if (!upd) return res.json({ ok: true, changed: [] });
+    await existing.source.client.putObject(existing.url, upd.data, 'text/calendar', existing.etag || undefined);
+    res.json({ ok: true, changed: upd.changed });
+  }));
+
+  /** Absage (CANCEL): Termin bzw. Vorkommen aus dem Kalender entfernen */
+  r.post('/messages/:id/invitation/remove', wrap(async (req, res) => {
+    const { inv } = await invitationOf(req);
+    const existing = await scheduling.findEvent(req.user, inv.uid);
+    if (!existing) return res.json({ ok: true, removed: false });
+    if (inv.recurrenceId) {
+      try {
+        const upd = ics.deleteOccurrence(existing.data, inv.recurrenceId);
+        await existing.source.client.putObject(existing.url, upd.data, 'text/calendar', existing.etag || undefined);
+        return res.json({ ok: true, removed: true, occurrence: true });
+      } catch (_) { /* kein Serientermin: ganz löschen */ }
+    }
+    await existing.source.client.deleteObject(existing.url, existing.etag || undefined);
+    res.json({ ok: true, removed: true });
+  }));
+
+  async function targetCalendar(req) {
+    let source;
+    let cal = req.body.calendar;
+    if (req.body.sourceId) source = await davService.getSource(req.user, req.body.sourceId);
+    else {
+      const all = await davService.allCollections(req.user);
+      const first = all.collections.find((c) => c.type === 'calendar');
+      if (!first) throw httpError(400, 'Kein Kalender vorhanden – bitte unter Einstellungen einen CalDAV-Server hinzufügen');
+      source = await davService.getSource(req.user, first.sourceId);
+      cal = first.url;
+    }
+    const cols = await davService.collections(req.user, source);
+    const c = cal ? cols.find((x) => x.url === cal) : cols.find((x) => x.type === 'calendar');
+    if (!c && !cal) throw httpError(400, 'Kein Kalender vorhanden');
+    let url = source.client.assertOwnUrl(cal || c.url);
+    if (!url.endsWith('/')) url += '/';
+    return { source, cal: url, name: c ? c.name : '' };
+  }
+
+  /** Ausnahme (RECURRENCE-ID) aus einer Einladung in die gespeicherte Serie übernehmen */
+  function mergeOccurrence(seriesData, occData) {
+    return ics.mergeOccurrence(seriesData, occData);
+  }
 
   // ================================================================== Aktionen
 

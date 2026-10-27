@@ -3,7 +3,7 @@ import {
   fileSize, formatAddress, avatar, debounce, esc,
 } from './ui.js';
 import { get, post, patch, del } from './api.js';
-import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts } from './state.js';
+import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts, notify as notifyState } from './state.js';
 import * as compose from './compose.js';
 import { printMessages } from './print.js';
 import { mailBackground } from './appearance.js';
@@ -348,7 +348,7 @@ function currentThreadIdsInFolder() {
 const SPECIAL_ORDER = ['\\Inbox', '\\Drafts', '\\Sent', '\\Archive', '\\Junk', '\\Trash', '\\Flagged', '\\Important', '\\All'];
 
 /** Ordner sortiert für Auswahllisten: Standardordner zuerst, dann alphabetisch nach Pfad (Unterordner unter dem Hauptordner). */
-function sortedFolders(folders) {
+export function sortedFolders(folders) {
   const segs = (f) => {
     // Pfad in Teile zerlegen (Trennzeichen aus parentPath ableiten), Standardordner mit deutschem Namen
     const parts = [];
@@ -720,10 +720,9 @@ function fillBody(container, m, p, forceRemote = false) {
   }
 
   if (p.calendar && p.calendar.length) {
-    container.appendChild(h('div', { class: 'banner banner-cal' },
-      icon('calendar', 16),
-      h('span', {}, 'Diese Nachricht enthält eine Kalendereinladung.'),
-      h('button', { class: 'btn btn-small', type: 'button', onClick: () => importIcs(m, p.calendar[0]) }, 'In Kalender übernehmen')));
+    const slot = h('div', { class: 'inv-slot' });
+    container.appendChild(slot);
+    invitationCard(slot, m, p);
   }
 
   if (p.html) container.appendChild(htmlFrame(p.html, allowRemote));
@@ -804,6 +803,149 @@ function textBody(text) {
     return s;
   });
   return h('div', { class: 'text-body', html: htmlLines.join('\n') });
+}
+
+// ====================================================================== Einladungen
+
+const INV_TZ = (() => { try { return Intl.DateTimeFormat().resolvedOptions().timeZone; } catch { return undefined; } })();
+const PS_TEXT = { ACCEPTED: 'Zugesagt', TENTATIVE: 'Vielleicht', DECLINED: 'Abgesagt', 'NEEDS-ACTION': 'Keine Antwort', DELEGATED: 'Delegiert' };
+const PS_SYM = { ACCEPTED: ['✓', 'ok'], TENTATIVE: ['?', 'maybe'], DECLINED: ['✕', 'no'], 'NEEDS-ACTION': ['…', 'open'], DELEGATED: ['→', 'open'] };
+const psBadge = (ps) => h('span', { class: `ps ps-${(PS_SYM[ps] || PS_SYM['NEEDS-ACTION'])[1]}`, title: PS_TEXT[ps] || ps }, (PS_SYM[ps] || PS_SYM['NEEDS-ACTION'])[0]);
+
+function invWhen(inv) {
+  if (!inv.start) return '';
+  const df = new Intl.DateTimeFormat('de-CH', { weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
+  if (inv.allDay) {
+    const st = new Date(`${inv.start}T12:00:00`);
+    const en = inv.end ? new Date(new Date(`${inv.end}T12:00:00`).getTime() - 86400000) : st;
+    return en > st ? `${df.format(st)} – ${df.format(en)}, ganztägig` : `${df.format(st)}, ganztägig`;
+  }
+  const st = new Date(inv.start);
+  const en = inv.end ? new Date(inv.end) : st;
+  const tf = new Intl.DateTimeFormat('de-CH', { hour: '2-digit', minute: '2-digit' });
+  return df.format(st) === df.format(en) ? `${df.format(st)}, ${tf.format(st)} – ${tf.format(en)} Uhr`
+    : `${df.format(st)}, ${tf.format(st)} Uhr – ${df.format(en)}, ${tf.format(en)} Uhr`;
+}
+
+const personLabel = (x) => (x ? (x.name ? `${x.name} <${x.email}>` : x.email) : '');
+
+/** Karte für Einladung / Antwort / Absage anstelle des einfachen Import-Hinweises */
+async function invitationCard(slot, m, p) {
+  const fallback = () => clear(slot, h('div', { class: 'banner banner-cal' },
+    icon('calendar', 16),
+    h('span', {}, 'Diese Nachricht enthält einen Kalendertermin.'),
+    h('button', { class: 'btn btn-small', type: 'button', onClick: () => importIcs(m, p.calendar[0]) }, 'In Kalender übernehmen')));
+  let inv;
+  try { inv = await get(`/messages/${m.id}/invitation`); } catch { fallback(); return; }
+  if (!slot.isConnected) return;
+
+  const head = (label, cls) => h('div', { class: `inv-head ${cls || ''}` }, icon('calendar', 16), h('span', {}, label));
+  const facts = h('dl', { class: 'inv-facts' },
+    h('dt', {}, 'Wann'), h('dd', {}, invWhen(inv)),
+    inv.ruleText ? [h('dt', {}, 'Wiederholung'), h('dd', {}, inv.ruleText)] : null,
+    inv.location ? [h('dt', {}, 'Ort'), h('dd', {}, inv.location)] : null,
+    inv.organizer ? [h('dt', {}, 'Organisator'), h('dd', {}, personLabel(inv.organizer))] : null);
+  const title = h('div', { class: 'inv-title' }, inv.title);
+  const status = h('div', { class: 'inv-status small' });
+  const card = h('div', { class: `inv-card inv-${inv.method.toLowerCase()}` });
+
+  if (inv.method === 'REPLY') {
+    const r0 = inv.replies && inv.replies[0];
+    const who = r0 ? (r0.name || r0.email) : 'Ein Teilnehmer';
+    clear(card, head(`${who}: ${PS_TEXT[r0 && r0.partstat] || 'Antwort'}`, `ps-head-${(PS_SYM[r0 && r0.partstat] || PS_SYM['NEEDS-ACTION'])[1]}`), title, facts, status);
+    clear(slot, card);
+    if (!inv.stored) { status.textContent = 'Der Termin ist in deinen Kalendern nicht (mehr) vorhanden.'; return; }
+    if (inv.stored.replyApplied) { status.textContent = `Antwort ist im Kalender „${inv.stored.calendarName}“ eingetragen.`; return; }
+    try {
+      const r = await post(`/messages/${m.id}/invitation/apply`, {});
+      status.textContent = r.ok ? `Antwort im Kalender „${inv.stored.calendarName}“ eingetragen.` : (r.reason || '');
+      if (r.ok && r.changed && r.changed.length) notifyState('events');
+    } catch (err) { status.textContent = err.message; }
+    return;
+  }
+
+  if (inv.method === 'CANCEL') {
+    const btn = inv.stored ? h('button', { class: 'btn btn-small btn-danger', type: 'button', onClick: async () => {
+      btn.disabled = true;
+      try {
+        const r = await post(`/messages/${m.id}/invitation/remove`, {});
+        status.textContent = r.removed ? (r.occurrence ? 'Der Termin wurde aus der Serie entfernt.' : 'Der Termin wurde aus deinem Kalender entfernt.') : 'Der Termin war nicht mehr im Kalender.';
+        btn.remove();
+        notifyState('events');
+      } catch (err) { toast(err.message, 'error'); btn.disabled = false; }
+    } }, 'Aus Kalender entfernen') : null;
+    status.textContent = inv.stored ? `Steht noch in deinem Kalender „${inv.stored.calendarName}“.` : 'Dieser Termin ist nicht in deinem Kalender.';
+    clear(card, head(inv.recurrenceId ? 'Ein Termin der Serie wurde abgesagt' : 'Termin abgesagt', 'ps-head-no'), title, facts,
+      h('div', { class: 'inv-actions' }, btn), status);
+    clear(slot, card);
+    return;
+  }
+
+  if (inv.method !== 'REQUEST' || !inv.me) {
+    // Veröffentlichter Termin (PUBLISH) oder Einladung, in der ich nicht stehe (z. B. über eine Verteilerliste)
+    clear(card, head(inv.method === 'REQUEST' ? 'Einladung (du stehst nicht auf der Teilnehmerliste)' : 'Kalendertermin'), title, facts,
+      h('div', { class: 'inv-actions' },
+        h('button', { class: 'btn btn-small', type: 'button', onClick: () => importIcs(m, inv.attachmentIdx) }, 'In Kalender übernehmen')));
+    clear(slot, card);
+    return;
+  }
+
+  // ---- Einladung, auf die ich antworten kann
+  const updated = inv.stored && inv.sequence > (inv.stored.sequence || 0);
+  let mine = inv.stored ? inv.stored.myStatus : null;
+  let cols = [];
+  let calSel = null;
+  if (!inv.stored) {
+    try {
+      cols = (await get('/dav/collections')).collections.filter((c) => c.type === 'calendar');
+    } catch { cols = []; }
+    if (cols.length > 1) calSel = h('select', { class: 'inv-cal', 'aria-label': 'Kalender' }, cols.map((c, i) => h('option', { value: String(i) }, c.name)));
+  }
+  let calWrap = null;
+  if (calSel) calWrap = h('span', { class: 'inv-calwrap' }, h('span', { class: 'small muted' }, 'in'), calSel);
+  const sendCb = h('input', { type: 'checkbox', checked: true });
+  const people = h('details', { class: 'inv-people' },
+    h('summary', {}, `${inv.attendees.length} Teilnehmer`),
+    h('ul', { class: 'att-list' }, inv.attendees.map((a) => h('li', {}, psBadge(a.partstat), ' ', a.name || a.email, a.name ? h('span', { class: 'muted' }, ` <${a.email}>`) : null))));
+  const showStatus = () => {
+    if (inv.stored || mine) {
+      status.textContent = mine && mine !== 'NEEDS-ACTION'
+        ? `Deine Antwort: ${PS_TEXT[mine]}${inv.stored ? ` · Kalender „${inv.stored.calendarName}“` : ''}`
+        : (inv.stored ? `Im Kalender „${inv.stored.calendarName}“ – noch nicht beantwortet` : '');
+    } else status.textContent = cols.length || calSel ? '' : 'Noch nicht beantwortet';
+    if (updated) status.prepend(h('strong', {}, 'Aktualisierte Einladung. '));
+  };
+  const answer = async (ps, btn) => {
+    btns.forEach((b) => { b.disabled = true; });
+    try {
+      const body = { partstat: ps, notify: sendCb.checked, tz: INV_TZ };
+      if (calSel) { const c = cols[Number(calSel.value)]; body.sourceId = c.sourceId; body.calendar = c.url; }
+      else if (cols.length === 1) { body.sourceId = cols[0].sourceId; body.calendar = cols[0].url; }
+      const r = await post(`/messages/${m.id}/invitation/respond`, body);
+      mine = ps;
+      if (r.calendarName) inv.stored = { ...(inv.stored || {}), calendarName: r.calendarName, myStatus: ps, sequence: inv.sequence };
+      else if (ps === 'DECLINED') inv.stored = null;
+      if (calWrap && inv.stored) { calWrap.remove(); calWrap = null; calSel = null; }
+      btns.forEach((b) => b.classList.toggle('on', b.dataset.ps === ps));
+      showStatus();
+      const sent = r.notified && r.notified.sent;
+      if (r.notified && r.notified.error) toast(`Antwort gespeichert, aber nicht verschickt: ${r.notified.error}`, 'error');
+      else toast(`${PS_TEXT[ps]}${sent ? ` – Antwort an ${inv.organizer ? (inv.organizer.name || inv.organizer.email) : 'den Organisator'} gesendet` : ''}`, 'success');
+      notifyState('events');
+    } catch (err) { toast(err.message, 'error'); } finally { btns.forEach((b) => { b.disabled = false; }); }
+    return btn;
+  };
+  const btns = [['ACCEPTED', 'Zusagen'], ['TENTATIVE', 'Vielleicht'], ['DECLINED', 'Absagen']].map(([ps, label]) => {
+    const b = h('button', { class: `btn btn-small ans ans-${PS_SYM[ps][1]}${mine === ps ? ' on' : ''}`, type: 'button', dataset: { ps },
+      onClick: () => answer(ps, b) }, label);
+    return b;
+  });
+  clear(card, head(updated ? 'Geänderte Einladung' : 'Einladung'), title, facts, people,
+    h('div', { class: 'inv-actions' }, btns, calWrap),
+    h('label', { class: 'check small inv-send' }, sendCb, ` Antwort an ${inv.organizer ? (inv.organizer.name || inv.organizer.email) : 'den Organisator'} senden`),
+    status);
+  showStatus();
+  clear(slot, card);
 }
 
 async function importIcs(m, idx) {
