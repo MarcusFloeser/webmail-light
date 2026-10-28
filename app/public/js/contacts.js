@@ -70,7 +70,8 @@ function renderBooks() {
   h('span', { class: 'book-name' }, b.name),
   h('small', {}, b.sourceName),
   iconButton('more', 'Adressbuch bearbeiten', (e) => { e.stopPropagation(); bookDialog(b); }, { class: 'tiny' })))
-    : h('div', { class: 'muted small' }, h('p', {}, 'Keine Adressbücher gefunden.'),
+    : h('div', { class: 'muted small book-empty' }, h('p', {}, 'Noch kein Adressbuch.'),
+      h('button', { class: 'btn btn-small', type: 'button', onClick: () => newBookDialog() }, 'Lokales Adressbuch anlegen'),
       h('a', { class: 'btn btn-small', href: '#/settings/dav' }, 'CardDAV-Server einbinden')));
 }
 
@@ -293,21 +294,24 @@ export function editDialog(c, preset = {}) {
   });
 }
 
-async function newBookDialog() {
-  const name = h('input', { type: 'text', placeholder: 'z. B. Arbeit' });
+export async function newBookDialog({ onCreated } = {}) {
+  const name = h('input', { type: 'text', placeholder: 'z. B. Familie' });
   let sources = [];
   try { sources = (await get('/dav/sources')).sources.map((x) => [String(x.id), x.name]); } catch (err) { toast(err.message, 'error'); return; }
-  if (!sources.length) { noServerHint(); return; }
-  const src = h('select', {}, sources.map(([id, n]) => h('option', { value: id }, n)));
+  const src = h('select', {},
+    h('option', { value: 'local' }, 'Lokal – nur in der Webmail'),
+    sources.map(([id, n]) => h('option', { value: id, selected: sources.length > 0 && id === sources[0][0] }, `${n} (wird mit Handy usw. abgeglichen)`)));
   modal({
     title: 'Neues Adressbuch',
-    body: h('div', { class: 'form-grid' }, field('Name', name), field('Speicherort', src)),
+    body: h('div', { class: 'form-grid' }, field('Name', name), field('Speicherort', src,
+      'Lokale Adressbücher liegen nur in der Webmail. Mit Export/Import (.vcf) lassen sich Kontakte jederzeit übertragen.')),
     actions: [
       { label: 'Abbrechen' },
       { label: 'Anlegen', primary: true, onClick: async () => {
-        await post('/dav/collections', { sourceId: src.value, type: 'addressbook', name: name.value || 'Adressbuch' });
+        const r = await post('/dav/collections', { sourceId: src.value, type: 'addressbook', name: name.value.trim() || 'Adressbuch' });
         toast('Adressbuch angelegt', 'success');
-        await loadBooks(true);
+        if (root) { await loadBooks(true); book = books.find((x) => x.url === r.url) || book; renderBooks(); await loadContacts(); }
+        if (onCreated) await onCreated(r.url);
       } },
     ],
   });
@@ -315,9 +319,30 @@ async function newBookDialog() {
 
 function bookDialog(b) {
   const name = h('input', { type: 'text', value: b.name });
+  const file = h('input', { type: 'file', accept: '.vcf,text/vcard,text/x-vcard', hidden: true });
+  file.addEventListener('change', async () => {
+    const f = file.files[0];
+    file.value = '';
+    if (!f) return;
+    try {
+      const data = await f.text();
+      const r = await post('/contacts/import', { sourceId: b.sourceId, book: b.url, data });
+      const failed = r.failed || [];
+      toast(`${r.imported ?? 0} von ${r.total ?? 0} Kontakt(en) importiert${failed.length ? ` – ${failed.length} fehlgeschlagen` : ''}`, failed.length ? 'error' : 'success', 6000);
+      if (failed.length) console.warn('Import-Fehler:', failed);
+      loadContactPhotos(true);
+      if (root && book && book.url === b.url) await loadContacts();
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  const exportUrl = `/api/contacts/export?sourceId=${encodeURIComponent(b.sourceId)}&book=${encodeURIComponent(b.url)}&name=${encodeURIComponent(b.name)}`;
   modal({
     title: 'Adressbuch bearbeiten',
-    body: h('div', { class: 'form-grid' }, field('Name', name), h('p', { class: 'hint' }, `${b.sourceName} · ${b.url}`)),
+    body: h('div', { class: 'form-grid' }, field('Name', name),
+      h('div', { class: 'book-io' },
+        h('a', { class: 'btn btn-small', href: exportUrl, download: `${b.name}.vcf` }, icon('download', 15), 'Exportieren (.vcf)'),
+        h('button', { class: 'btn btn-small', type: 'button', onClick: () => file.click() }, 'Importieren (.vcf)…'),
+        file),
+      h('p', { class: 'hint' }, b.sourceId === 'local' ? 'Lokal in der Webmail gespeichert.' : `${b.sourceName} · ${b.url}`)),
     actions: [
       { label: 'Löschen', danger: true, onClick: async () => {
         if (!(await confirmDialog('Adressbuch löschen', `„${b.name}“ mit allen Kontakten löschen?`, { confirmLabel: 'Löschen' }))) return true;
@@ -336,8 +361,41 @@ function bookDialog(b) {
 
 function noServerHint() {
   modal({
-    title: 'Kein Kalender-/Kontakte-Server',
-    body: h('p', {}, 'Webmail speichert Kalender und Kontakte auf deinem vorhandenen CalDAV/CardDAV-Server (z. B. Nextcloud, mailcow/SOGo, mailbox.org). Binde ihn zuerst in den Einstellungen ein.'),
-    actions: [{ label: 'Abbrechen' }, { label: 'Zu den Einstellungen', primary: true, onClick: () => { location.hash = '#/settings/dav'; } }],
+    title: 'Noch kein Adressbuch',
+    body: h('p', {}, 'Lege ein lokales Adressbuch in der Webmail an – oder binde in den Einstellungen deinen CardDAV-Server ein (z. B. mailcow/SOGo, Nextcloud), damit die Kontakte auch auf dem Handy erscheinen.'),
+    actions: [
+      { label: 'Abbrechen' },
+      { label: 'Server einbinden', onClick: () => { location.hash = '#/settings/dav'; } },
+      { label: 'Lokales Adressbuch anlegen', primary: true, onClick: () => { newBookDialog(); } },
+    ],
+  });
+}
+
+/** Name aus einer Mail in Vor-/Nachname zerlegen: „Muster, Anna“ oder „Anna Muster“ */
+function splitName(name) {
+  const n = String(name || '').replace(/^["']|["']$/g, '').trim();
+  if (!n || n.includes('@')) return { firstName: '', lastName: '' };
+  if (n.includes(',')) {
+    const [last, first] = n.split(',', 2).map((x) => x.trim());
+    return { firstName: first || '', lastName: last || '' };
+  }
+  const parts = n.split(/\s+/);
+  if (parts.length === 1) return { firstName: parts[0], lastName: '' };
+  return { firstName: parts.slice(0, -1).join(' '), lastName: parts[parts.length - 1] };
+}
+
+/** Absender/Empfänger einer Mail als neuen Kontakt anlegen (Dialog vorausgefüllt, Adressbuch wählbar) */
+export async function addAddressToContacts({ name, address }) {
+  if (!books.length) {
+    try { books = (await get('/dav/collections')).collections.filter((c) => c.type === 'addressbook'); } catch { books = []; }
+  }
+  const open = () => editDialog(null, { ...splitName(name), emails: [{ type: '', value: address }] });
+  if (books.length) { open(); return; }
+  // noch kein Adressbuch: zuerst eines anlegen (lokal oder auf dem Server), dann weiter
+  newBookDialog({
+    onCreated: async () => {
+      books = (await get('/dav/collections')).collections.filter((c) => c.type === 'addressbook');
+      open();
+    },
   });
 }

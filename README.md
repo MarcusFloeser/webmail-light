@@ -169,6 +169,13 @@ Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
 
 **SOGo/mailcow**: Eingetragene Einladungen erhalten `SCHEDULE-AGENT=CLIENT` (RFC 6638), damit SOGo nicht zusätzlich eine eigene Antwort verschickt (ab SOGo 3.2.5).
 
+### Lokale Adressbücher, Import/Export, Adressen aus Mails
+
+- **Lokale Adressbücher**: In *Kontakte → +* als Speicherort „Lokal – nur in der Webmail“ wählen. Sie liegen in der Datenbank der Webmail (pro Benutzer) und funktionieren wie Server-Adressbücher (Kontakte, Fotos, Adressvorschläge, Bilder von Kontakten anzeigen), werden aber nicht mit Handy/Thunderbird abgeglichen. Gesichert werden sie mit dem Datenbank-Backup.
+- **Export/Import**: Im Menü eines Adressbuchs (⋯) als `.vcf` exportieren bzw. eine `.vcf`-Datei importieren – z. B. um Kontakte zwischen lokalen und Server-Adressbüchern zu verschieben. Gleiche Kontakte (gleiche UID) werden beim erneuten Import aktualisiert statt verdoppelt.
+- **Adressen aus Mails übernehmen**: In einer geöffneten Mail auf Absender oder Empfänger klicken → „Zu Kontakten hinzufügen…“ (Name und Adresse vorausgefüllt, Adressbuch wählbar). Ausserdem: „Neue E-Mail an …“ und „Adresse kopieren“.
+- Neue Adressbücher und Kalender auf dem Server erhalten einen lesbaren Pfad (z. B. `…/familie/`) und den gewählten Namen – auch bei SOGo, das den Namen beim Anlegen sonst nicht übernimmt.
+
 ## Konfiguration (`.env`)
 
 | Variable | Standard | Bedeutung |

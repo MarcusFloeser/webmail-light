@@ -5,6 +5,7 @@ import {
 import { get, post, patch, del } from './api.js';
 import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts, notify as notifyState, isFavorite, favoriteFolders, toggleFavorite, moveFavorite } from './state.js';
 import * as compose from './compose.js';
+import * as contactsView from './contacts.js';
 import { printMessages } from './print.js';
 import { mailBackground } from './appearance.js';
 
@@ -614,8 +615,10 @@ function messageCard(m, isLast) {
   avatar(m.fromName, m.fromAddr, 38),
   h('div', { class: 'msg-meta' },
     h('div', { class: 'msg-from' },
-      h('strong', {}, m.fromName || m.fromAddr),
-      m.fromName ? h('span', { class: 'addr' }, `<${m.fromAddr}>`) : null,
+      // Adresse anklickbar (Menü) nur bei geöffneter Nachricht – zugeklappt öffnet ein Klick die Nachricht
+      (isOpen ? addrButton : (a, ...label) => h('span', { class: 'addr-plain' }, ...label))({ name: m.fromName, address: m.fromAddr },
+        h('strong', {}, m.fromName || m.fromAddr),
+        m.fromName ? h('span', { class: 'addr' }, ` <${m.fromAddr}>`) : null),
       otherFolder ? h('span', { class: 'chip' }, m.folderSpecial ? folderLabel({ specialUse: m.folderSpecial, name: m.folderName }) : m.folderName) : null,
       m.duplicate ? h('span', { class: 'chip chip-dup', title: 'Weiteres Exemplar derselben Nachricht in diesem Ordner (z. B. doppelt zugestellt). Über „Mehr → Diese Nachricht löschen“ entfernen.' }, 'Kopie') : null),
     isOpen
@@ -629,6 +632,8 @@ function messageCard(m, isLast) {
       { label: 'Allen antworten', onClick: () => replyTo(m, 'replyAll') },
       { label: 'Weiterleiten', onClick: () => replyTo(m, 'forward') },
       m.folderSpecial === '\\Drafts' ? { label: 'Entwurf bearbeiten', onClick: () => editDraft(m) } : null,
+      !isContact(String(m.fromAddr || '').toLowerCase()) && m.fromAddr
+        ? { label: 'Absender zu Kontakten hinzufügen…', onClick: () => contactsView.addAddressToContacts({ name: m.fromName, address: m.fromAddr }) } : null,
       { label: 'Als ungelesen markieren', onClick: () => action([m.id], 'unseen') },
       { label: 'Nur diese Nachricht drucken', onClick: () => printGroups([[m.id]]) },
       { label: 'Diese Nachricht löschen', danger: true, onClick: () => action([m.id], 'delete', null, { keepList: true }).then(() => openThread(cur.threadId, { soft: true })) },
@@ -646,11 +651,42 @@ function messageCard(m, isLast) {
 }
 
 function recipientsLine(m) {
-  const fmt = (list) => (list || []).map((a) => a.name || a.address).join(', ');
+  const list = (items) => {
+    const out = [];
+    (items || []).forEach((a, i) => {
+      if (i) out.push(', ');
+      out.push(addrButton(a, a.name || a.address));
+    });
+    return out;
+  };
   const parts = [];
-  if (m.to && m.to.length) parts.push(`an ${fmt(m.to)}`);
-  if (m.cc && m.cc.length) parts.push(`Cc ${fmt(m.cc)}`);
-  return parts.join(' · ');
+  if (m.to && m.to.length) parts.push(h('span', {}, 'an ', list(m.to)));
+  if (m.cc && m.cc.length) parts.push(h('span', {}, `${parts.length ? ' · ' : ''}Cc `, list(m.cc)));
+  return parts;
+}
+
+/** Klickbare Adresse (Absender/Empfänger) → Menü: Mail schreiben, kopieren, zu Kontakten hinzufügen */
+function addrButton(a, ...label) {
+  if (!a || !a.address) return h('span', {}, ...label);
+  return h('button', {
+    type: 'button', class: 'addr-link', title: `${a.address} – klicken für Optionen`,
+    onClick: (e) => { e.stopPropagation(); addressMenu(e, a); },
+  }, ...label);
+}
+
+function addressMenu(e, a) {
+  const known = isContact(String(a.address).toLowerCase());
+  popupMenu(e, [
+    { label: `Neue E-Mail an ${a.address}`, onClick: () => compose.openCompose({ to: formatAddress(a) }) },
+    { label: 'Adresse kopieren', onClick: () => {
+      (navigator.clipboard ? navigator.clipboard.writeText(a.address) : Promise.reject(new Error()))
+        .then(() => toast('Adresse kopiert'))
+        .catch(() => toast(a.address));
+    } },
+    known
+      ? { label: 'Steht bereits in den Kontakten', onClick: () => { location.hash = '#/contacts'; } }
+      : { label: 'Zu Kontakten hinzufügen…', onClick: () => contactsView.addAddressToContacts(a) },
+  ]);
 }
 
 async function loadBody(m) {

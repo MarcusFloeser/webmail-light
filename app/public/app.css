@@ -1212,3 +1212,19 @@ input[type=checkbox].switch:checked::after { transform: translateX(18px); }
 .fav-dot { width: 7px; height: 7px; flex: none; }
 .acc-fav { padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
 @media (hover: none) { .folder:hover .fav-star { display: none; } }
+
+/* ===================================================================== Kalender: heutiger Tag ganz eingefärbt */
+.cal-month .cal-cell.today, .cal-week .week-day.today {
+  background: color-mix(in srgb, var(--accent) 13%, var(--panel));
+  box-shadow: inset 0 0 0 2px var(--accent);
+}
+.cal-month .cal-cell.today:hover { background: color-mix(in srgb, var(--accent) 20%, var(--panel)); }
+.cal-week .week-day.today .week-head { font-weight: 700; }
+.cal-agenda .ag-day.today h3 { color: var(--accent); }
+
+/* ===================================================================== Adressen in Mails anklickbar */
+.addr-link { border: 0; background: none; padding: 0 2px; margin: 0 -2px; font: inherit; color: inherit; cursor: pointer; border-radius: 4px; text-align: left; }
+.addr-link:hover, .addr-link:focus-visible { background: var(--hover); text-decoration: underline; text-decoration-color: var(--border-strong); }
+.msg-from .addr-link { display: inline-flex; align-items: baseline; gap: 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.book-io { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+.book-empty { display: grid; gap: 6px; justify-items: start; }

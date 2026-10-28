@@ -195,3 +195,20 @@ ALTER TABLE mail_domains ADD COLUMN IF NOT EXISTS sieve_port INT NOT NULL DEFAUL
 
 -- Anhang-Erkennung verbessert (eingebettete Bilder, Signaturen): bestehende Mails einmalig neu prüfen
 ALTER TABLE folders ADD COLUMN IF NOT EXISTS attach_rev INT NOT NULL DEFAULT 0;
+
+-- Lokale Adressbücher (in der Webmail gespeichert, unabhängig von einem CardDAV-Server)
+CREATE TABLE IF NOT EXISTS local_books (
+  id          SERIAL PRIMARY KEY,
+  user_id     INT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS local_books_user_idx ON local_books(user_id);
+CREATE TABLE IF NOT EXISTS local_contacts (
+  book_id     INT NOT NULL REFERENCES local_books(id) ON DELETE CASCADE,
+  name        TEXT NOT NULL,                 -- Dateiname wie bei CardDAV (<uid>.vcf)
+  data        TEXT NOT NULL,                 -- vCard
+  etag        TEXT NOT NULL,
+  updated_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (book_id, name)
+);

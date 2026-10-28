@@ -60,6 +60,13 @@ function router() {
   r.post('/dav/collections', wrap(async (req, res) => {
     const { sourceId, type, name, color } = req.body;
     const source = await svc.getSource(req.user, sourceId);
+    const label = String(name || '').trim() || (type === 'addressbook' ? 'Adressbuch' : 'Kalender');
+    if (source.local) {
+      if (type !== 'addressbook') return res.status(400).json({ error: 'Lokal können nur Adressbücher angelegt werden' });
+      const url = await source.client.createBook(label);
+      svc.invalidate(req.user, source.id);
+      return res.json({ url });
+    }
     let home = await source.client.homeSet(type === 'addressbook' ? 'addressbook' : 'calendar').catch(() => null);
     if (!home) {
       // Fallback: neben einer vorhandenen Sammlung gleichen Typs anlegen
@@ -67,9 +74,23 @@ function router() {
       if (!existing) return res.status(400).json({ error: 'Auf diesem Server kann kein Speicherort ermittelt werden' });
       home = existing.url.replace(/[^/]+\/?$/, '');
     }
-    const url = `${home}${crypto.randomUUID()}/`;
-    if (type === 'addressbook') await source.client.mkaddressbook(url, String(name || 'Adressbuch'));
-    else await source.client.mkcalendar(url, String(name || 'Kalender'), color || '#3b6fd8');
+    // Lesbarer Pfad aus dem Namen (z. B. „familie/“); ist er schon vergeben, eine eindeutige Kennung
+    const slug = label.toLowerCase().normalize('NFKD').replace(/[\u0300-\u036f]/g, '').replace(/ß/g, 'ss')
+      .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    const create = (u) => (type === 'addressbook' ? source.client.mkaddressbook(u, label) : source.client.mkcalendar(u, label, color || '#3b6fd8'));
+    let url = slug ? `${home}${slug}/` : `${home}${crypto.randomUUID()}/`;
+    try {
+      await create(url);
+    } catch (err) {
+      if (!slug || ![405, 409, 403].includes(err.status)) throw err;
+      url = `${home}${slug}-${crypto.randomUUID().slice(0, 8)}/`;
+      await create(url);
+    }
+    // Manche Server (z. B. SOGo) übernehmen den Namen beim Anlegen nicht – zusätzlich setzen
+    try {
+      await source.client.proppatch(url, `<d:displayname>${require('./client').xmlEscape(label)}</d:displayname>`
+        + (type !== 'addressbook' && color ? `<ic:calendar-color>${require('./client').xmlEscape(color)}</ic:calendar-color>` : ''));
+    } catch (_) { /* Name bleibt dann wie vom Server vergeben */ }
     svc.invalidate(req.user, source.id);
     res.json({ url });
   }));
@@ -78,6 +99,11 @@ function router() {
     const { sourceId, url, name, color } = req.body;
     const source = await svc.getSource(req.user, sourceId);
     const target = collUrl(source, url);
+    if (source.local) {
+      if (name) await source.client.rename(target, name);
+      svc.invalidate(req.user, source.id);
+      return res.json({ ok: true });
+    }
     let props = '';
     if (name) props += `<d:displayname>${require('./client').xmlEscape(name)}</d:displayname>`;
     if (color) props += `<ic:calendar-color>${require('./client').xmlEscape(color)}</ic:calendar-color>`;
@@ -266,6 +292,51 @@ function router() {
     const newEtag = await source.client.putObject(target, data, 'text/vcard', etag || current.etag);
     svc.invalidate(req.user, '__contacts__');
     res.json({ url: target, etag: newEtag });
+  }));
+
+  /** Adressbuch als .vcf herunterladen */
+  r.get('/contacts/export', wrap(async (req, res) => {
+    const source = await svc.getSource(req.user, req.query.sourceId);
+    const book = collUrl(source, req.query.book);
+    const items = await source.client.addressbookQuery(book);
+    const body = items.map((it) => String(it.data).trim().replace(/\r?\n/g, '\r\n')).join('\r\n') + '\r\n';
+    const name = String(req.query.name || 'kontakte').replace(/[^\w\-äöüÄÖÜ ]+/g, '_').trim() || 'kontakte';
+    res.setHeader('Content-Type', 'text/vcard; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename*=UTF-8''${encodeURIComponent(name)}.vcf`);
+    res.end(body);
+  }));
+
+  /** .vcf-Datei (eine oder viele vCards) in ein Adressbuch importieren. body: { sourceId, book, data } */
+  r.post('/contacts/import', wrap(async (req, res) => {
+    const source = await svc.getSource(req.user, req.body.sourceId);
+    const book = collUrl(source, req.body.book);
+    const cards = String(req.body.data || '').replace(/\r\n?/g, '\n').match(/BEGIN:VCARD[\s\S]*?END:VCARD/gi) || [];
+    if (!cards.length) return res.status(400).json({ error: 'Die Datei enthält keine Kontakte (vCard)' });
+    if (cards.length > 5000) return res.status(400).json({ error: 'Zu viele Kontakte auf einmal (höchstens 5000)' });
+    let imported = 0;
+    const failed = [];
+    for (const raw of cards) {
+      let text = raw.replace(/\n/g, '\r\n');
+      let uid = (text.match(/^UID:(.+)$/mi) || [])[1];
+      uid = uid ? uid.trim() : crypto.randomUUID();
+      if (!/^UID:/mi.test(text)) text = text.replace(/\r\nEND:VCARD/i, `\r\nUID:${uid}\r\nEND:VCARD`);
+      const url = `${book}${encodeURIComponent(uid.replace(/[\/\\]/g, '_'))}.vcf`;
+      try {
+        try {
+          await source.client.putObject(url, `${text}\r\n`, 'text/vcard');
+        } catch (err) {
+          if (err.status !== 412) throw err;
+          // gleicher Kontakt schon vorhanden (gleiche UID) → aktualisieren
+          const cur = await source.client.getObject(url);
+          await source.client.putObject(url, `${text}\r\n`, 'text/vcard', cur.etag || undefined);
+        }
+        imported++;
+      } catch (err) {
+        failed.push(`${(vcard.parse(text).fn || uid)}: ${err.message}`);
+      }
+    }
+    svc.invalidate(req.user, '__contacts__');
+    res.json({ imported, failed: failed.slice(0, 20), total: cards.length });
   }));
 
   r.delete('/contacts', wrap(async (req, res) => {

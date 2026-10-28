@@ -9,6 +9,7 @@ const db = require('../db');
 const { decrypt } = require('../crypto');
 const { DavClient, DavError } = require('./client');
 const vcard = require('./vcard');
+const { localSource, LOCAL_ID } = require('./local');
 
 const collectionCache = new Map(); // `${userId}:${sourceId}` -> { until, list }
 const contactCache = new Map();    // userId -> { until, contacts }
@@ -21,12 +22,14 @@ function toSource(r) {
   return { id: String(r.id), name: r.name, url: r.url, username: r.username, client: externalClient(r) };
 }
 
+/** Alle Quellen: eingebundene Server + lokale Adressbücher (immer vorhanden) */
 async function getSources(user) {
   const rows = await db.many('SELECT * FROM dav_sources WHERE user_id = $1 ORDER BY id', [user.id]);
-  return rows.map(toSource);
+  return [...rows.map(toSource), localSource(user)];
 }
 
 async function getSource(user, sourceId) {
+  if (String(sourceId) === LOCAL_ID) return localSource(user);
   const row = await db.one('SELECT * FROM dav_sources WHERE id = $1 AND user_id = $2', [parseInt(sourceId, 10) || 0, user.id]);
   if (!row) throw new DavError(404, 'Kalender-/Kontakte-Server nicht gefunden');
   return toSource(row);
@@ -62,7 +65,7 @@ async function allCollections(user, opts) {
   return {
     collections: results.flatMap((r) => r.items),
     errors: results.filter((r) => r.error).map((r) => r.error),
-    hasSources: sources.length > 0,
+    hasSources: sources.some((s) => !s.local),
   };
 }
 

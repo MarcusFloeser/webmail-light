@@ -241,7 +241,7 @@ function drawList() {
     if (list.length) groups.push([d, list]);
   }
   clear(els.grid, h('div', { class: 'cal-agenda' },
-    groups.length ? groups.map(([d, list]) => h('section', { class: 'ag-day' },
+    groups.length ? groups.map(([d, list]) => h('section', { class: `ag-day ${ymd(d) === ymd(new Date()) ? 'today' : ''}` },
       h('h3', {}, dayFmt.format(d)),
       list.map((ev) => {
         const { s, e } = span(ev);
