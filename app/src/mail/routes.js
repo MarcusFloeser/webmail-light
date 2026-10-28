@@ -34,6 +34,7 @@ function publicAccount(a, isAdmin = false) {
     id: a.id, name: a.name, email: a.email, color: a.color, enabled: a.enabled, sortOrder: a.sort_order,
     saveSent: a.save_sent, managed,
     status: a.status, lastError: a.last_error, lastSync: a.last_sync,
+    quota: quotaOf(a),
   };
   if (managed && !isAdmin) return { ...base, lastError: a.last_error ? hideServer(a.last_error, a) : a.last_error };
   return {
@@ -42,6 +43,15 @@ function publicAccount(a, isAdmin = false) {
     smtpHost: a.smtp_host, smtpPort: a.smtp_port, smtpSecurity: a.smtp_security, smtpUser: a.smtp_user,
     smtpSameCredentials: !a.smtp_user && !a.smtp_pass,
     allowInsecureTls: a.allow_insecure_tls,
+  };
+}
+
+/** Speicherplatz des Postfachs (vom Mailserver per IMAP QUOTA, sonst geschätzt) */
+function quotaOf(a) {
+  if (a.quota_used === null || a.quota_used === undefined) return null;
+  return {
+    used: Number(a.quota_used), limit: a.quota_limit ? Number(a.quota_limit) : null,
+    source: a.quota_source, checkedAt: a.quota_checked_at,
   };
 }
 
@@ -263,6 +273,15 @@ function router() {
     res.json({ ok: true });
   }));
 
+  /** Speicherplatz sofort neu abfragen */
+  r.post('/accounts/:id/quota', wrap(async (req, res) => {
+    const a = await ownAccount(req.params.id, req.user.id);
+    const w = manager.get(a.id);
+    if (!w) throw httpError(409, 'Das Konto ist nicht verbunden');
+    const q = await w.refreshQuota();
+    res.json({ quota: q ? { ...q, checkedAt: new Date().toISOString() } : null });
+  }));
+
   r.post('/accounts/:id/sync', wrap(async (req, res) => {
     const a = await ownAccount(req.params.id, req.user.id);
     if (a.status === 'error') await manager.restart(a.id);
@@ -398,6 +417,7 @@ function router() {
     });
     await db.query('DELETE FROM messages WHERE folder_id = $1', [f.id]);
     w.scheduleFolderSync(f.path, 200);
+    w.refreshQuota().catch(() => {}); // Speicherplatz gleich wieder anzeigen
     res.json({ ok: true });
   }));
 

@@ -1,6 +1,7 @@
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, formValues, fullDate } from './ui.js';
 import { get, post, put, patch, del } from './api.js';
 import { state } from './state.js';
+import { level, thresholds } from './quota.js';
 
 export function unmount() {}
 
@@ -31,6 +32,7 @@ export async function render(main, route) {
     h('div', { class: 'section-head' }, h('h2', {}, 'Benutzerverwaltung'),
       h('button', { class: 'btn btn-primary', type: 'button', onClick: () => userDialog(main, null) }, icon('plus', 16), 'Benutzer anlegen')),
     h('p', { class: 'muted small' }, 'Jeder Benutzer hat eigene E-Mail-Konten sowie eigene eingebundene Kalender-/Kontakte-Server.'),
+    quotaLegend(),
     h('table', { class: 'data-table' },
       h('thead', {}, h('tr', {}, h('th', {}, 'Benutzer'), h('th', {}, 'Name'), h('th', {}, 'Konten'),
         h('th', {}, 'Letzte Anmeldung'), h('th', {}, 'Mailbox'), h('th', {}, 'Angelegt'), h('th', {}, ''))),
@@ -75,6 +77,16 @@ function bytes(n) {
   return `${n.toLocaleString('de-CH', { maximumFractionDigits: n < 10 && i > 0 ? 1 : 0 })} ${units[i]}`;
 }
 
+/** Aktive Grenzen für die Speicher-Balken (aus der .env) – zur Kontrolle sichtbar */
+function quotaLegend() {
+  const t = thresholds();
+  const sw = (cls) => h('span', { class: `legend-sw ${cls}` });
+  return h('p', { class: 'quota-legend small muted', title: 'Einstellbar in der .env: QUOTA_WARN_PERCENT und QUOTA_FULL_PERCENT (danach „docker compose up -d“)' },
+    'Mailbox: ', sw(''), ` unter ${t.warn} %`,
+    t.warn < t.full ? [' · ', sw('warn'), ` ab ${t.warn} %`] : null,
+    ' · ', sw('full'), ` ab ${t.full} %`);
+}
+
 function mailboxCell(boxes) {
   const known = boxes.filter((b) => b.used !== null && b.used !== undefined);
   if (!boxes.length) return h('span', { class: 'muted' }, '–');
@@ -88,8 +100,8 @@ function mailboxCell(boxes) {
     + (estimated ? '\n\n„ca.“ = geschätzt: Der Mailserver meldet keine Quota, Wert aus den synchronisierten Nachrichten hochgerechnet.' : '');
   const pct = limit ? Math.min(100, Math.round(used / limit * 100)) : null;
   return h('div', { class: 'mbox', title: tip },
-    h('span', { class: 'nowrap' }, `${estimated ? 'ca. ' : ''}${bytes(used)}`, limit ? h('span', { class: 'muted' }, ` von ${bytes(limit)}`) : null),
-    pct !== null ? h('span', { class: `mbox-bar${pct >= 90 ? ' full' : pct >= 75 ? ' warn' : ''}`, 'aria-label': `${pct} % belegt` },
+    h('span', { class: 'nowrap' }, `${estimated ? 'ca. ' : ''}${bytes(used)}`, limit ? h('span', { class: 'muted' }, ` von ${bytes(limit)} · ${Math.min(100, Math.round(used / limit * 100))} %`) : null),
+    pct !== null ? h('span', { class: `mbox-bar${level(pct) ? ` ${level(pct)}` : ''}`, 'aria-label': `${pct} % belegt` },
       h('span', { style: { width: `${pct}%` } })) : null);
 }
 

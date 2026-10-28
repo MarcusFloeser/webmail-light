@@ -1,5 +1,5 @@
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, avatar, debounce, dateInput, formatDeDate, imageToAvatarDataUrl } from './ui.js';
-import { loadContactPhotos } from './state.js';
+import { loadContactPhotos, contactDisplayName, compareContacts } from './state.js';
 import { get, post, put, del, patch } from './api.js';
 import * as compose from './compose.js';
 
@@ -90,7 +90,8 @@ async function loadContacts() {
 }
 
 function renderList() {
-  const list = contacts.filter((c) => !q || `${c.fn} ${c.org} ${c.emails.map((e) => e.value).join(' ')} ${c.phones.map((p) => p.value).join(' ')}`.toLowerCase().includes(q));
+  const list = contacts.filter((c) => !q || `${c.fn} ${c.firstName || ''} ${c.lastName || ''} ${c.org} ${c.emails.map((e) => e.value).join(' ')} ${c.phones.map((p) => p.value).join(' ')}`.toLowerCase().includes(q))
+    .sort(compareContacts());
   if (!list.length) {
     clear(els.list, h('li', { class: 'empty-list' }, q ? 'Keine Treffer.' : 'Noch keine Kontakte.'));
     return;
@@ -98,13 +99,14 @@ function renderList() {
   let letter = '';
   const items = [];
   for (const c of list) {
-    const l = (c.fn || '#')[0].toUpperCase();
+    const name = contactDisplayName(c);
+    const l = (name || '#')[0].toLocaleUpperCase('de');
     if (l !== letter) { letter = l; items.push(h('li', { class: 'letter' }, l)); }
     items.push(h('li', {
       class: `contact ${selected && selected.url === c.url ? 'active' : ''}`,
       onClick: () => { selected = c; renderList(); renderDetail(); root.classList.add('reading'); },
     }, contactAvatar(c, 32),
-    h('div', {}, h('strong', {}, c.fn || '(ohne Namen)'), h('small', {}, (c.emails[0] && c.emails[0].value) || c.org || ''))));
+    h('div', {}, h('strong', {}, name || '(ohne Namen)'), h('small', {}, (c.emails[0] && c.emails[0].value) || c.org || ''))));
   }
   clear(els.list, items);
 }

@@ -49,6 +49,8 @@ async function main() {
     next();
   });
 
+  const compress = require('./compress');
+  app.use('/api', compress.jsonCompression);
   app.use('/api', express.json({ limit: `${config.maxBodyMb}mb` }));
   app.use('/api', auth.csrfGuard);
   app.use('/api', auth.router({
@@ -71,10 +73,13 @@ async function main() {
     res.type('html').send(indexHtml);
   };
   app.get(['/', '/index.html'], sendIndex);
+  const precompressed = compress.staticCompressed(assets.PUBLIC, {
+    cacheControl: (req, res) => (res.locals.currentBuild ? 'public, max-age=31536000, immutable' : 'no-cache'),
+  });
   app.use('/v/:ver', (req, res, next) => {
     res.locals.currentBuild = req.params.ver === build;
     next();
-  }, express.static(assets.PUBLIC, {
+  }, precompressed, express.static(assets.PUBLIC, {
     index: false,
     setHeaders: (res) => {
       // Aktuelle Version: dauerhaft cachen; veraltete Kennung (alte Seite noch offen): nicht cachen
@@ -101,7 +106,10 @@ async function main() {
 
   const server = http.createServer(app);
   hub.attach(server, auth.userFromRequest);
-  server.listen(config.port, () => console.log(`[http] Webmail läuft auf Port ${config.port}`));
+  server.listen(config.port, () => {
+    console.log(`[http] Webmail läuft auf Port ${config.port}`);
+    console.log(`[config] Speicher-Balken: orange ab ${config.quotaPercent.warn} %, rot ab ${config.quotaPercent.full} % (QUOTA_WARN_PERCENT / QUOTA_FULL_PERCENT)`);
+  });
 
   await manager.startAll();
 

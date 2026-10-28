@@ -1,5 +1,5 @@
 // Gemeinsamer Zustand der App (Benutzer, Konten, Ordner, Identitäten)
-import { get } from './api.js';
+import { get, patch } from './api.js';
 import { setPhotoEmails } from './ui.js';
 
 const subs = new Set();
@@ -126,4 +126,76 @@ export function applyFolderCounts(list) {
 
 export function refreshFolderCounts() {
   return get('/folder-counts').then((r) => applyFolderCounts(r.folders)).catch(() => {});
+}
+
+// ------------------------------------------------------------------ Favoriten-Ordner
+// Gespeichert im Benutzerprofil (settings.favoriteFolders = [{ id, accountId, path }]) – auf allen Geräten gleich.
+// Die ID ist massgebend; Konto + Pfad dienen als Rückfall, falls ein Ordner neu angelegt wurde.
+
+function favoriteEntries() {
+  const list = state.user && state.user.settings && state.user.settings.favoriteFolders;
+  return Array.isArray(list) ? list.filter((x) => x && x.id) : [];
+}
+
+/** → [{ folder, account }] in der gespeicherten Reihenfolge (nicht mehr vorhandene werden ausgelassen) */
+export function favoriteFolders() {
+  const out = [];
+  for (const e of favoriteEntries()) {
+    for (const a of state.accounts) {
+      const f = a.folders.find((x) => x.id === e.id) || (a.id === e.accountId ? a.folders.find((x) => x.path === e.path) : null);
+      if (f && f.selectable && !out.some((o) => o.folder.id === f.id)) { out.push({ folder: f, account: a }); break; }
+    }
+  }
+  return out;
+}
+
+export function isFavorite(folder) {
+  return favoriteFolders().some((x) => x.folder.id === folder.id);
+}
+
+async function saveFavorites(list) {
+  const favoriteFolders = list.map(({ folder, account }) => ({ id: folder.id, accountId: account.id, path: folder.path }));
+  // sofort anzeigen, dann speichern
+  state.user = { ...state.user, settings: { ...(state.user.settings || {}), favoriteFolders } };
+  notify('favorites');
+  const r = await patch('/me', { settings: { favoriteFolders } });
+  state.user = r.user;
+}
+
+export function toggleFavorite(folder, account) {
+  const list = favoriteFolders();
+  const i = list.findIndex((x) => x.folder.id === folder.id);
+  if (i >= 0) list.splice(i, 1); else list.push({ folder, account });
+  return saveFavorites(list);
+}
+
+/** Favorit in der Reihenfolge verschieben (dir: -1 nach oben, +1 nach unten) */
+export function moveFavorite(folder, dir) {
+  const list = favoriteFolders();
+  const i = list.findIndex((x) => x.folder.id === folder.id);
+  const j = i + dir;
+  if (i < 0 || j < 0 || j >= list.length) return Promise.resolve();
+  [list[i], list[j]] = [list[j], list[i]];
+  return saveFavorites(list);
+}
+
+// ------------------------------------------------------------------ Kontakte: Sortierung und Anzeige
+/** 'first' = „Vorname Nachname“ (Standard), 'last' = „Nachname, Vorname“ */
+export function contactSortMode() {
+  return state.user && state.user.settings && state.user.settings.contactSort === 'last' ? 'last' : 'first';
+}
+
+/** Anzeigename eines Kontakts gemäss Einstellung (ohne Vor-/Nachname: wie gespeichert, z. B. Firma) */
+export function contactDisplayName(c, mode = contactSortMode()) {
+  const first = String(c.firstName || '').trim();
+  const last = String(c.lastName || '').trim();
+  if (mode === 'last' && last) return first ? `${last}, ${first}` : last;
+  return c.fn || [first, last].filter(Boolean).join(' ') || c.org || '';
+}
+
+const contactCollator = new Intl.Collator('de', { sensitivity: 'base', numeric: true });
+/** Vergleichsfunktion für Kontakte gemäss Einstellung */
+export function compareContacts(mode = contactSortMode()) {
+  return (a, b) => contactCollator.compare(contactDisplayName(a, mode), contactDisplayName(b, mode))
+    || contactCollator.compare(a.fn || '', b.fn || '');
 }

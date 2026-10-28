@@ -1,12 +1,13 @@
 import { h, clear, icon, iconButton, toast, avatar } from './ui.js';
 import { get, post, onEvent, connectPush, disconnectPush } from './api.js';
-import { state, subscribe, loadAccounts, loadContactPhotos, refreshFolderCounts, findFolder, folderLabel, SPECIAL_ICONS } from './state.js';
+import { state, subscribe, loadAccounts, loadContactPhotos, refreshFolderCounts, findFolder, folderLabel, SPECIAL_ICONS, favoriteFolders, isFavorite, toggleFavorite } from './state.js';
 import * as mail from './mail.js';
 import * as compose from './compose.js';
 import * as calendar from './calendar.js';
 import * as contacts from './contacts.js';
 import * as settings from './settings.js';
 import * as admin from './admin.js';
+import { quotaView } from './quota.js';
 import * as reminders from './reminders.js';
 import * as agenda from './agenda.js';
 import * as appearance from './appearance.js';
@@ -287,6 +288,61 @@ function sortFolders(account, activeFolderId) {
   return out;
 }
 
+/** Stern zum An-/Abpinnen (erscheint beim Darüberfahren; angepinnte Ordner zeigen ihn immer) */
+function favStar(f, a) {
+  const on = isFavorite(f);
+  return h('button', {
+    type: 'button', class: `fav-star ${on ? 'on' : ''}`, tabindex: '-1',
+    title: on ? 'Aus Favoriten entfernen' : 'Als Favorit oben anpinnen', 'aria-label': on ? 'Aus Favoriten entfernen' : 'Als Favorit anpinnen',
+    onClick: (e) => {
+      e.preventDefault(); e.stopPropagation();
+      toggleFavorite(f, a).catch((err) => toast(`Favoriten konnten nicht gespeichert werden: ${err.message}`, 'error'));
+    },
+  }, icon('star', 13));
+}
+
+/** Bereich „Favoriten“ oben in der Ordnerliste (Ordner aus allen Konten) */
+function favoritesSection(route, collapsed) {
+  const favs = favoriteFolders();
+  if (!favs.length) return null;
+  const isCollapsed = collapsed.has('fav');
+  const activeId = route.view === 'mail' ? Number(route.folderId) : null;
+  const multi = state.accounts.length > 1;
+  const head = h('div', { class: 'acc-head' },
+    h('button', {
+      class: 'acc-toggle', type: 'button', 'aria-expanded': String(!isCollapsed),
+      onClick: () => {
+        const c = collapsedAccounts();
+        if (c.has('fav')) c.delete('fav'); else c.add('fav');
+        localStorage.setItem('wm.collapsed', JSON.stringify([...c]));
+        renderFolderTree();
+      },
+    },
+    h('span', { class: `chev ${isCollapsed ? 'closed' : ''}` }, icon('chevronDown', 14)),
+    h('span', { class: 'fav-head-icon' }, icon('star', 13)),
+    h('span', { class: 'acc-name' }, 'Favoriten')));
+  const list = isCollapsed ? null : h('ul', { class: 'folders' }, favs.map(({ folder: f, account: a }) => {
+    const unread = f.specialUse !== '\\Sent' && f.specialUse !== '\\Trash' ? f.unseen : 0;
+    const link = h('a', {
+      href: `#/mail/${f.id}`,
+      class: `folder ${activeId === f.id ? 'active' : ''} ${f.unseen ? 'has-unread' : ''}`,
+      style: { paddingLeft: '4px' },
+      dataset: { folderId: f.id },
+      title: `${a.name}: ${f.path}`,
+      onContextmenu: (e) => { e.preventDefault(); mail.folderMenu(f, a, e, { inFavorites: true }); },
+    },
+    h('span', { class: 'twisty-space' }),
+    multi ? h('span', { class: 'acc-dot fav-dot', style: { background: a.color }, title: a.name }) : null,
+    icon(SPECIAL_ICONS[f.specialUse] || 'folder', 16),
+    h('span', { class: 'folder-name' }, folderLabel(f)),
+    favStar(f, a),
+    unread ? h('span', { class: 'badge' }, unread) : null);
+    mail.makeDropTarget(link, f);
+    return h('li', {}, link);
+  }));
+  return h('section', { class: 'acc acc-fav' }, head, list);
+}
+
 function renderFolderTree() {
   const tree = $('#folder-tree');
   const route = parseRoute();
@@ -297,7 +353,7 @@ function renderFolderTree() {
       h('a', { class: 'btn btn-small', href: '#/settings/accounts/new' }, 'Konto hinzufügen')));
     return;
   }
-  clear(tree, state.accounts.map((a) => {
+  clear(tree, favoritesSection(route, collapsed), state.accounts.map((a) => {
     const isCollapsed = collapsed.has(a.id);
     const statusIcon = a.status === 'error'
       ? h('span', { class: 'acc-status error', title: a.lastError || 'Fehler' }, '!')
@@ -347,6 +403,7 @@ function renderFolderTree() {
           twisty,
           icon(SPECIAL_ICONS[f.specialUse] || 'folder', 16),
           h('span', { class: 'folder-name', title: f.path }, label),
+          favStar(f, a),
           unread ? h('span', { class: `badge ${hiddenUnread && !f.unseen ? 'badge-soft' : ''}` }, unread) : null)
           : h('span', { class: 'folder disabled', style: pad },
             twisty, icon('folder', 16), h('span', { class: 'folder-name' }, label),
@@ -354,8 +411,9 @@ function renderFolderTree() {
       if (f.selectable) mail.makeDropTarget(li.firstChild, f);
       return li;
     }));
+    const quota = !isCollapsed && a.quota ? h('a', { class: 'acc-quota', href: `#/settings/accounts/${a.id}` }, quotaView(a.quota, { compact: true })) : null;
     return h('section', { class: 'acc' }, head, a.status === 'error' && !isCollapsed
-      ? h('a', { class: 'acc-error', href: `#/settings/accounts/${a.id}` }, a.lastError || 'Verbindungsfehler') : null, list);
+      ? h('a', { class: 'acc-error', href: `#/settings/accounts/${a.id}` }, a.lastError || 'Verbindungsfehler') : null, list, quota);
   }));
   updateTitle();
 }
@@ -437,6 +495,15 @@ function handlePush(msg) {
     if (msg.t === 'connected') scheduleAccountsReload();
     return;
   }
+  if (msg.t === 'quota') {
+    const a = state.accounts.find((x) => x.id === msg.accountId);
+    if (a) {
+      a.quota = { used: msg.used, limit: msg.limit, source: msg.source, checkedAt: msg.checkedAt };
+      renderFolderTree();
+      window.dispatchEvent(new CustomEvent('wm-quota', { detail: { accountId: a.id } }));
+    }
+    return;
+  }
   if (msg.t === 'folders' || msg.t === 'account') {
     if (msg.t === 'account') {
       const a = state.accounts.find((x) => x.id === msg.accountId);
@@ -511,6 +578,7 @@ function bindGlobal() {
     if (!state.user) return;
     if (what === 'accounts') renderSidebar();
     else if (what === 'counts') { renderFolderTree(); mail.onCountsChanged(); }
+    else if (what === 'favorites') renderFolderTree();
     else if (what === 'contacts') mail.onContactsChanged();
   });
   // Ohne Live-Verbindung (z. B. Proxy reicht WebSockets nicht durch) Zähler regelmässig abfragen

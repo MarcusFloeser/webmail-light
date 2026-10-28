@@ -31,7 +31,7 @@ const FETCH_QUERY = {
 const FOLDER_ORDER = { '\\Inbox': 0, '\\Sent': 1, '\\Drafts': 2, '\\Archive': 3, null: 4, '\\All': 6, '\\Junk': 7, '\\Trash': 8 };
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const QUOTA_INTERVAL_MS = 30 * 60000;
+const QUOTA_INTERVAL_MS = 15 * 60000;
 
 function imapOptions(acc) {
   return {
@@ -214,7 +214,7 @@ class AccountWorker {
         }
       }
       this.initialDone = true;
-      // Mailbox-Grösse für die Admin-Übersicht (höchstens alle 30 Minuten)
+      // Speicherplatz für Benutzer und Admin-Übersicht (höchstens alle 15 Minuten)
       if (!this.quotaAt || Date.now() - this.quotaAt > QUOTA_INTERVAL_MS) {
         this.quotaAt = Date.now();
         this.updateQuota(c).catch((err) => this.log('Quota:', err.message));
@@ -260,7 +260,17 @@ class AccountWorker {
     await db.query(
       `UPDATE mail_accounts SET quota_used = $2, quota_limit = $3, quota_source = $4, quota_checked_at = now() WHERE id = $1`,
       [this.id, used, limit, source]);
+    hub.send(this.userId, { t: 'quota', accountId: this.id, used, limit, source, checkedAt: new Date().toISOString() });
     return { used, limit, source };
+  }
+
+  /** Speicherplatz sofort abfragen (z. B. nach „Papierkorb leeren“ oder per Knopf) */
+  refreshQuota() {
+    return this.enqueue(async () => {
+      const c = await this.client();
+      this.quotaAt = Date.now();
+      return this.updateQuota(c);
+    });
   }
 
   async syncFolderList(c) {
@@ -270,19 +280,29 @@ class AccountWorker {
     const statuses = new Map();
     const paths = [];
     let structural = false;
+    // Nur neue oder geänderte Ordner schreiben – der Abgleich läuft alle paar Minuten für jedes Konto
+    const existing = new Map((await db.many(
+      'SELECT path, name, delimiter, parent_path, special_use, selectable, subscribed FROM folders WHERE account_id = $1',
+      [this.id])).map((r) => [r.path, r]));
     for (const e of list) {
       const flags = e.flags instanceof Set ? e.flags : new Set(e.flags || []);
       const selectable = !flags.has('\\Noselect') && !flags.has('\\NonExistent');
-      const r = await db.one(
-        `INSERT INTO folders (account_id, path, name, delimiter, parent_path, special_use, selectable, subscribed)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-         ON CONFLICT (account_id, path) DO UPDATE
-           SET name = EXCLUDED.name, delimiter = EXCLUDED.delimiter, parent_path = EXCLUDED.parent_path,
-               special_use = EXCLUDED.special_use, selectable = EXCLUDED.selectable, subscribed = EXCLUDED.subscribed
-         RETURNING (xmax = 0) AS inserted`,
-        [this.id, e.path, e.name, e.delimiter || null, e.parentPath || null, guessSpecialUse(e), selectable,
-          e.subscribed !== false]);
-      if (r.inserted) structural = true;
+      const v = {
+        name: e.name, delimiter: e.delimiter || null, parent_path: e.parentPath || null,
+        special_use: guessSpecialUse(e), selectable, subscribed: e.subscribed !== false,
+      };
+      const old = existing.get(e.path);
+      const changed = !old || Object.keys(v).some((k) => (old[k] ?? null) !== (v[k] ?? null));
+      if (changed) {
+        await db.query(
+          `INSERT INTO folders (account_id, path, name, delimiter, parent_path, special_use, selectable, subscribed)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT (account_id, path) DO UPDATE
+             SET name = EXCLUDED.name, delimiter = EXCLUDED.delimiter, parent_path = EXCLUDED.parent_path,
+                 special_use = EXCLUDED.special_use, selectable = EXCLUDED.selectable, subscribed = EXCLUDED.subscribed`,
+          [this.id, e.path, v.name, v.delimiter, v.parent_path, v.special_use, v.selectable, v.subscribed]);
+        structural = true;
+      }
       paths.push(e.path);
       if (e.status) statuses.set(e.path, e.status);
     }

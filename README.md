@@ -15,7 +15,7 @@ Browser-Mailclient für mehrere Benutzer, komplett als Docker-Compose-Stack.
 | Mehrere Konten | Beliebig viele IMAP/SMTP-Konten pro Benutzer, je eigener Sync-Worker |
 | Mehrere Identitäten | Pro Konto beliebig viele Absender (Name, Adresse, Reply-To, Auto-Bcc, Signatur). Antworten wählen automatisch die Identität, an die die Mail ging |
 
-Außerdem: HTML-Mails in einer Sandbox ohne Skripte, externe Bilder standardmäßig blockiert (bei Absendern aus den eigenen Kontakten automatisch angezeigt, abschaltbar im Profil; sonst pro Absender freigebbar), einklappbare Terminspalte rechts in der Mail-Ansicht mit den Terminen der nächsten 4 Wochen, Signatur-Editor mit Formatierung, Farben, Links und Logo (Bilder werden als eingebettete CID-Bilder versendet; HTML-Quelltext umschaltbar), Empfänger als Adress-Chips (Name + Adresse, per Drag & Drop zwischen An/Cc/Bcc verschiebbar), Rich-Text-Editor, Anhänge (auch per Drag & Drop), Entwürfe mit Autosave, Weiterleiten inkl. Anhängen oder als .eml, Drucken bzw. als PDF speichern (einzelne Nachricht, ganze Konversation oder mehrere ausgewählte; auch mit Strg+P), Suche, Tastenkürzel, Dark Mode, Mobil-Layout, verschiebbare Spaltentrenner (Breiten pro Browser gespeichert, Doppelklick = Standard), Farbschema automatisch/hell/dunkel, eigene Hintergrundfarbe und eigenes Hintergrundbild pro Benutzer (Einstellungen → Darstellung; Schrift wird automatisch hell/dunkel gewählt; Mail-Liste, Kontakte, Kalender und Einstellungen optional in derselben Farbe).
+Außerdem: Favoriten-Ordner (per Rechtsklick oder Stern oben in der Ordnerliste anpinnen, auch kontoübergreifend; im Profil gespeichert), HTML-Mails in einer Sandbox ohne Skripte, externe Bilder standardmäßig blockiert (bei Absendern aus den eigenen Kontakten automatisch angezeigt, abschaltbar im Profil; sonst pro Absender freigebbar), einklappbare Terminspalte rechts in der Mail-Ansicht mit den Terminen der nächsten 4 Wochen, Signatur-Editor mit Formatierung, Farben, Links und Logo (Bilder werden als eingebettete CID-Bilder versendet; HTML-Quelltext umschaltbar), Empfänger als Adress-Chips (Name + Adresse, per Drag & Drop zwischen An/Cc/Bcc verschiebbar), Rich-Text-Editor, Anhänge (auch per Drag & Drop), Entwürfe mit Autosave, Weiterleiten inkl. Anhängen oder als .eml, Drucken bzw. als PDF speichern (einzelne Nachricht, ganze Konversation oder mehrere ausgewählte; auch mit Strg+P), Suche, Tastenkürzel, Dark Mode, Mobil-Layout, verschiebbare Spaltentrenner (Breiten pro Browser gespeichert, Doppelklick = Standard), Farbschema automatisch/hell/dunkel, eigene Hintergrundfarbe und eigenes Hintergrundbild pro Benutzer (Einstellungen → Darstellung; Schrift wird automatisch hell/dunkel gewählt; Mail-Liste, Kontakte, Kalender und Einstellungen optional in derselben Farbe).
 
 ## Architektur
 
@@ -109,6 +109,10 @@ Verbindung prüfen: `docker compose exec app node src/tools/ldap-check.js marcus
 
 Ohne LDAP-Konfiguration kann mit `PASSWORD_HELP_TEXT` ein Hinweis („Wende dich an …“) hinter „Passwort vergessen?“ hinterlegt werden.
 
+## Speicherplatz
+
+Unter jedem Konto in der Ordnerleiste und in den Kontoeinstellungen sieht der Benutzer, wie viel Platz sein Postfach belegt („700 MB von 5 GB“), als Balken: grün, ab `QUOTA_WARN_PERCENT` (80 %) orange, ab `QUOTA_FULL_PERCENT` (95 %) rot – mit einem Hinweis, wie man Platz schafft. Die Werte kommen vom Mailserver (IMAP QUOTA, bei mailcow vorhanden), werden alle 15 Minuten und nach „Papierkorb leeren“ aktualisiert und lassen sich in den Kontoeinstellungen sofort neu abfragen. Der Admin sieht dieselben Balken in der Benutzerübersicht.
+
 ## Filter & Abwesenheitsnotiz
 
 Unter **Einstellungen → Filter & Abwesenheit** richtet jeder Benutzer pro Konto ein:
@@ -179,6 +183,7 @@ Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
 | `AUTH_ADMINS` | – | Kommagetrennte Logins mit Admin-Rechten |
 | `AUTH_CREATE_ACCOUNT` | true | Postfach beim ersten Login als Konto einrichten |
 | `LOGIN_MAX_PER_ACCOUNT` / `LOGIN_MAX_PER_IP` / `LOGIN_WHITELIST` | 5 / 20 / – | Schutz vor Passwort-Raten (siehe oben) |
+| `QUOTA_WARN_PERCENT` / `QUOTA_FULL_PERCENT` | 80 / 95 | Speicherplatz-Balken: ab diesem Füllstand orange bzw. rot (Ordnerleiste, Kontoeinstellungen, Benutzerübersicht) |
 | `AUTH_DAV_URL` / `AUTH_DAV_NAME` | – / Kalender & Kontakte | CalDAV/CardDAV-Server, der beim IMAP-Login mit denselben Zugangsdaten eingebunden wird |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | admin / zufällig | Lokaler Administrator beim allerersten Start (bei `AUTH_MODE=imap` nur, wenn ein Passwort gesetzt ist) |
 | `PUBLIC_URL` | – | Öffentliche Adresse, z. B. `https://mail.example.com` (für den Link in der Zurücksetzen-Mail) |
@@ -200,6 +205,8 @@ Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
 | `POLL_INTERVAL_SECONDS` | 120 | Abfrageintervall für Ordner ohne IDLE |
 
 ## Betrieb
+
+- **Komprimierung**: Die Webmail komprimiert selbst (Brotli/gzip) – die Oberfläche wird beim Start einmal vorkomprimiert (≈ 390 KB → 100 KB), API-Antworten ab 1 KB beim Senden. Ein vorgeschalteter Proxy muss nichts weiter tun; das Nginx-Beispiel enthält zusätzlich gzip für den Rest.
 
 - **Backup**: Volume `webmail_db-data` (Benutzer, Konten, Einstellungen). Mails, Kalender und Kontakte liegen auf den jeweiligen Servern.
   `docker compose exec db pg_dump -U webmail webmail > backup.sql`

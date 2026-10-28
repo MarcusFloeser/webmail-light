@@ -185,6 +185,8 @@ function router({ onUserDeleted }) {
       allowRegistration: config.allowRegistration && config.authMode !== 'imap',
       authMode: config.authMode,
       defaultDomain: config.authDefaultDomain || null,
+      quotaWarnPercent: config.quotaPercent.warn,
+      quotaFullPercent: config.quotaPercent.full,
       ...password.capabilities(),
     });
   });

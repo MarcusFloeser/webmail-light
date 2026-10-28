@@ -3,7 +3,7 @@ import {
   fileSize, formatAddress, avatar, debounce, esc,
 } from './ui.js';
 import { get, post, patch, del } from './api.js';
-import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts, notify as notifyState } from './state.js';
+import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts, notify as notifyState, isFavorite, favoriteFolders, toggleFavorite, moveFavorite } from './state.js';
 import * as compose from './compose.js';
 import { printMessages } from './print.js';
 import { mailBackground } from './appearance.js';
@@ -460,8 +460,18 @@ export function popupMenu(e, items) {
   }, 0);
 }
 
-export function folderMenu(folder, account, e) {
+export function folderMenu(folder, account, e, { inFavorites = false } = {}) {
+  const fav = isFavorite(folder);
+  const favs = favoriteFolders();
+  const pos = favs.findIndex((x) => x.folder.id === folder.id);
+  const favErr = (err) => toast(`Favoriten konnten nicht gespeichert werden: ${err.message}`, 'error');
   popupMenu(e, [
+    folder.selectable !== false ? {
+      label: fav ? 'Aus Favoriten entfernen' : 'Als Favorit oben anpinnen',
+      onClick: () => toggleFavorite(folder, account).then(() => toast(fav ? 'Aus Favoriten entfernt' : `„${folderLabel(folder)}“ oben angepinnt`)).catch(favErr),
+    } : null,
+    inFavorites && pos > 0 ? { label: 'In Favoriten nach oben', onClick: () => moveFavorite(folder, -1).catch(favErr) } : null,
+    inFavorites && pos >= 0 && pos < favs.length - 1 ? { label: 'In Favoriten nach unten', onClick: () => moveFavorite(folder, 1).catch(favErr) } : null,
     { label: 'Alle als gelesen markieren', onClick: async () => { try { const rr = await post(`/folders/${folder.id}/read-all`); applyFolderCounts(rr.folders); if (folder.id === cur.folderId) loadThreads(true); } catch (err) { toast(err.message, 'error'); } } },
     { label: 'Jetzt synchronisieren', onClick: () => post(`/folders/${folder.id}/sync`).then(() => toast('Synchronisierung gestartet')).catch((err) => toast(err.message, 'error')) },
     { label: 'Unterordner anlegen…', onClick: () => createFolderDialog(account, folder) },
@@ -760,6 +770,8 @@ function htmlFrame(html, allowRemote) {
 <base target="_blank">
 <style>
 html,body{margin:0;padding:0;background:${mailBackground()};color:#1f2328}
+/* Die Höhe des Rahmens richtet sich nach dem Inhalt – Angaben wie height:100% am Dokument würden sonst mitwachsen */
+html,body{height:auto!important;min-height:0!important;max-height:none!important;overflow:hidden!important}
 body{font:14px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;padding:2px 2px 8px;word-wrap:break-word;overflow-wrap:anywhere}
 img{max-width:100%;height:auto}
 table{max-width:100%}
@@ -772,11 +784,36 @@ a{color:#2557c7}
     referrerpolicy: 'no-referrer', title: 'Nachrichteninhalt',
   });
   frame.srcdoc = doc;
+  // Höhe = Höhe des Inhalts. Schutz gegen Rückkopplung: Mails mit Elementen in Fensterhöhe
+  // (100vh, height:100%) wachsen mit dem Rahmen mit – dann nicht endlos nachziehen.
+  let last = 0;
+  let lastDelta = 0;
+  let same = 0;
+  let steps = 0;
+  let frozen = false;
+  let observer = null;
+  const started = Date.now();
+  const MAX_HEIGHT = 60000;
   const resize = () => {
+    if (frozen) return;
     try {
       const d = frame.contentDocument;
       if (!d || !d.documentElement) return;
-      frame.style.height = `${Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0) + 4}px`;
+      const want = Math.min(MAX_HEIGHT, Math.max(d.documentElement.scrollHeight, d.body ? d.body.scrollHeight : 0));
+      if (want === last) return;
+      const delta = want - last;
+      // Rückkopplung: der Inhalt wächst nach jeder Vergrösserung um denselben Betrag nach
+      same = last && delta > 0 && Math.abs(delta - lastDelta) <= 2 ? same + 1 : 0;
+      lastDelta = delta;
+      last = want;
+      steps++;
+      frame.style.height = `${want}px`;
+      // anhalten: gleichbleibendes Nachwachsen, sehr viele Änderungen in kurzer Zeit oder Obergrenze erreicht
+      if (same >= 4 || (steps > 40 && Date.now() - started < 4000) || want >= MAX_HEIGHT) {
+        frozen = true;
+        if (observer) observer.disconnect();
+        if (same >= 4) frame.style.height = `${want - delta * same}px`; // auf die Höhe vor dem Nachwachsen zurück
+      }
     } catch { /* ignore */ }
   };
   frame.addEventListener('load', () => {
@@ -784,7 +821,8 @@ a{color:#2557c7}
     try {
       const d = frame.contentDocument;
       for (const img of d.images) img.addEventListener('load', resize);
-      new ResizeObserver(resize).observe(d.body);
+      observer = new ResizeObserver(resize);
+      observer.observe(d.body);
       // mailto:-Links im eigenen Editor öffnen
       d.addEventListener('click', (e) => {
         const a = e.target.closest && e.target.closest('a[href^="mailto:"]');

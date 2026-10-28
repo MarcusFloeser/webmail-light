@@ -86,37 +86,6 @@ function attendeesOf(vevent) {
 }
 
 /**
- * Teilnehmer setzen. Bestehende Antworten (PARTSTAT) bleiben erhalten.
- * SCHEDULE-AGENT=CLIENT: Die Webmail verschickt Einladungen selbst – der CalDAV-Server
- * (z. B. SOGo mit SOGoAppointmentSendEMailNotifications) soll nicht zusätzlich einladen.
- */
-function setParticipants(vevent, organizer, attendees) {
-  const before = new Map(attendeesOf(vevent).map((a) => [a.email, a]));
-  vevent.removeAllProperties('organizer');
-  vevent.removeAllProperties('attendee');
-  if (!attendees || !attendees.length) return;
-  if (organizer && organizer.email) {
-    const o = vevent.addPropertyWithValue('organizer', `mailto:${organizer.email}`);
-    if (organizer.name) o.setParameter('cn', organizer.name);
-    o.setParameter('schedule-agent', 'CLIENT');
-  }
-  const seen = new Set();
-  for (const a of attendees) {
-    const email = mailto(a.email);
-    if (!email || seen.has(email)) continue;
-    seen.add(email);
-    const old = before.get(email);
-    const p = vevent.addPropertyWithValue('attendee', `mailto:${email}`);
-    if (a.name || (old && old.name)) p.setParameter('cn', a.name || old.name);
-    p.setParameter('role', (old && old.role) || 'REQ-PARTICIPANT');
-    const isOrg = organizer && email === mailto(organizer.email);
-    p.setParameter('partstat', isOrg ? 'ACCEPTED' : (a.partstat || (old && old.partstat) || 'NEEDS-ACTION'));
-    if (!isOrg) p.setParameter('rsvp', 'TRUE');
-    p.setParameter('schedule-agent', 'CLIENT');
-  }
-}
-
-/**
  * Erinnerungen (VALARM) als "Minuten vor Beginn".
  * null = keine VALARM vorhanden (-> Standard-Erinnerung des Benutzers greift),
  * []   = ausdrücklich keine Erinnerung.
@@ -330,7 +299,6 @@ function dropExceptions(comp, master) {
  * fields: {
  *   title, location, description, start, end, allDay, reminder,
  *   rrule: null | 'WEEKLY' | { freq, interval, byday[], count, until },
- *   organizer: { email, name }, attendees: [{ email, name }]   (undefined = unverändert)
  *   scope: 'all' (Standard) | 'this'   – bei Serien: nur dieses Vorkommen ändern
  *   recurrenceId: Vorkommen der Serie (aus expand), nötig für scope 'this' und zum Verschieben der Serie
  * }
@@ -377,7 +345,6 @@ function buildEvent(fields, existing) {
     }
     applyText(ex, fields);
     if (fields.start !== undefined) { const { s, e } = formTimes(fields); setTimes(ex, s, e); }
-    if (fields.attendees !== undefined) setParticipants(ex, fields.organizer, fields.attendees);
     applyReminder(ex, fields);
     touch(ex);
     bumpSequence(ex);
@@ -432,11 +399,6 @@ function buildEvent(fields, existing) {
       }
     }
   }
-  if (fields.attendees !== undefined) {
-    setParticipants(master, fields.organizer, fields.attendees);
-    // Ausnahmen bekommen dieselben Teilnehmer
-    for (const ex of comp.getAllSubcomponents('vevent')) if (ex !== master) setParticipants(ex, fields.organizer, fields.attendees);
-  }
   applyReminder(master, fields);
   bumpSequence(master);
   return { uid, data: comp.toString() };
@@ -464,50 +426,6 @@ function stripScheduleParams(vevent) {
       for (const k of ['schedule-agent', 'schedule-status', 'schedule-force-send']) p.removeParameter(k);
     }
   }
-}
-
-/**
- * iTIP-Nachricht aus einem gespeicherten Termin erzeugen.
- * method: 'REQUEST' | 'CANCEL'; opts.recurrenceId: nur dieses Vorkommen (CANCEL eines Vorkommens)
- */
-function itipMessage(data, method, opts = {}) {
-  const comp = parseCal(data);
-  comp.removeAllProperties('method');
-  comp.updatePropertyWithValue('method', method);
-  comp.updatePropertyWithValue('prodid', '-//Webmail//DE');
-  const master = masterOf(comp);
-  let vevents = comp.getAllSubcomponents('vevent');
-  if (opts.recurrenceId && master) {
-    const rid = ridTime(master, opts.recurrenceId);
-    let ex = findException(comp, master, rid);
-    for (const v of vevents) comp.removeSubcomponent(v);
-    if (!ex) {
-      // abgesagtes Vorkommen ohne Ausnahme: aus dem Serientermin ableiten
-      ex = new ICAL.Component('vevent');
-      for (const name of ['uid', 'summary', 'location', 'organizer', 'attendee', 'sequence']) {
-        for (const p of master.getAllProperties(name)) ex.addProperty(ICAL.Property.fromString(p.toICALString()));
-      }
-      setTimeProp(ex, 'recurrence-id', rid);
-      setTimeProp(ex, 'dtstart', rid);
-    }
-    comp.addSubcomponent(ex);
-    vevents = [ex];
-  }
-  for (const v of vevents) {
-    for (const a of v.getAllSubcomponents('valarm')) v.removeSubcomponent(a);
-    v.removeAllProperties('x-webmail-noalarm');
-    stripScheduleParams(v);
-    v.updatePropertyWithValue('dtstamp', nowUtc());
-    if (method === 'CANCEL') {
-      v.updatePropertyWithValue('status', 'CANCELLED');
-      if (Array.isArray(opts.only) && opts.only.length) {
-        const keep = new Set(opts.only.map(mailto));
-        for (const p of v.getAllProperties('attendee')) if (!keep.has(mailto(p.getFirstValue()))) v.removeProperty(p);
-      }
-    }
-  }
-  const summary = (vevents[0] && vevents[0].getFirstPropertyValue('summary')) || '';
-  return { method, summary, data: comp.toString() };
 }
 
 /** iTIP-Antwort (REPLY) eines Teilnehmers erzeugen. */
@@ -660,14 +578,6 @@ function mergeOccurrence(seriesData, occData) {
   return comp.toString();
 }
 
-/** Teilnehmer-Liste eines gespeicherten Termins (Organisator, Teilnehmer, Sequenz). */
-function participantsOf(data) {
-  const comp = parseCal(data);
-  const master = masterOf(comp);
-  if (!master) return { organizer: null, attendees: [], title: '' };
-  return { organizer: organizerOf(master), attendees: attendeesOf(master), title: master.getFirstPropertyValue('summary') || '' };
-}
-
 /** Bereitet eine per Mail empfangene .ics zum Import vor (METHOD entfernen). */
 function prepareImport(data) {
   const comp = new ICAL.Component(ICAL.parse(data));
@@ -688,5 +598,5 @@ function prepareImport(data) {
 
 module.exports = {
   expand, buildEvent, deleteOccurrence, prepareImport,
-  itipMessage, itipReply, parseInvitation, mergeOccurrence, applyReply, setMyPartstat, participantsOf, rruleInfo,
+  itipReply, parseInvitation, mergeOccurrence, applyReply, setMyPartstat,
 };

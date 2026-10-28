@@ -1176,3 +1176,39 @@ input[type=checkbox].switch:checked::after { transform: translateX(18px); }
 .cond-val { min-width: 120px; }
 .cond-wrap { display: grid; gap: 8px; }
 .cond-wrap[hidden] { display: none; }
+
+/* ===================================================================== Speicherplatz */
+.quota { display: grid; gap: 5px; }
+/* gleiche Darstellung wie in der Benutzerübersicht: grün, ab QUOTA_WARN_PERCENT orange, ab QUOTA_FULL_PERCENT rot */
+.quota-bar { height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; box-shadow: inset 0 0 0 1px var(--border); }
+.quota-bar > span { display: block; height: 100%; border-radius: 4px; background: var(--ok); }
+.quota.warn .quota-bar > span { background: var(--warn); }
+.quota.full .quota-bar > span { background: var(--danger); }
+.quota.warn .quota-text { color: var(--warn); }
+.quota:not(.compact) .quota-bar { height: 10px; border-radius: 5px; }
+.quota-text { font-size: 13px; color: var(--text-2); font-variant-numeric: tabular-nums; }
+.quota.compact .quota-text { font-size: 11.5px; color: var(--muted); }
+.quota.full .quota-text { color: var(--danger); font-weight: 600; }
+.quota-hint { margin: 4px 0 0; font-size: 12.5px; padding: 8px 10px; border-radius: var(--radius-sm); background: var(--warn-soft); color: var(--text); }
+.quota-hint.full { background: var(--danger-soft); }
+.acc-quota { display: block; margin: 6px 10px 10px 30px; text-decoration: none; color: inherit; }
+.acc-quota:hover .quota-text { color: var(--text-2); }
+.quota-sec { margin-bottom: 8px; }
+.quota-box { max-width: 420px; }
+.acc-quota:hover, .acc-quota:focus, .acc-quota:hover *, .acc-quota:focus * { text-decoration: none; }
+.quota-legend { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; margin-top: -6px; }
+.legend-sw { display: inline-block; width: 16px; height: 6px; border-radius: 3px; background: var(--ok); margin: 0 2px 0 4px; }
+.legend-sw.warn { background: var(--warn); }
+.legend-sw.full { background: var(--danger); }
+
+/* ===================================================================== Favoriten-Ordner */
+.fav-star { display: none; flex: none; align-items: center; justify-content: center; width: 20px; height: 20px; margin-left: auto; padding: 0; border: 0; border-radius: 4px; background: none; color: var(--muted); cursor: pointer; }
+.fav-star + .badge { margin-left: 4px; }
+.folder:hover .fav-star, .folder:focus-visible .fav-star { display: inline-flex; }
+.fav-star:hover { color: var(--star); background: var(--hover); }
+.fav-star.on { color: var(--star); }
+.fav-star.on svg path, .fav-head-icon svg path { fill: currentColor; }
+.fav-head-icon { display: inline-flex; color: var(--star); margin-right: 2px; }
+.fav-dot { width: 7px; height: 7px; flex: none; }
+.acc-fav { padding-bottom: 6px; margin-bottom: 4px; border-bottom: 1px solid var(--border); }
+@media (hover: none) { .folder:hover .fav-star { display: none; } }

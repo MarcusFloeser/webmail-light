@@ -5,6 +5,7 @@ import { richEditor } from './richtext.js';
 import { state, loadAccounts } from './state.js';
 import * as reminders from './reminders.js';
 import { filterSection } from './filters.js';
+import { quotaView } from './quota.js';
 
 const PRESETS = [
   { domains: ['gmail.com', 'googlemail.com'], name: 'Gmail', imapHost: 'imap.gmail.com', imapPort: 993, imapSecurity: 'ssl', smtpHost: 'smtp.gmail.com', smtpPort: 465, smtpSecurity: 'ssl', saveSent: false, hint: 'Gmail: App-Passwort verwenden (Google-Konto → Sicherheit → App-Passwörter). Gmail legt gesendete Mails selbst ab.' },
@@ -78,6 +79,7 @@ function accountDetail(c, a) {
       h('a', { href: '#/settings/accounts', class: 'icon-btn', title: 'Zurück' }, icon('back')),
       h('h2', {}, a.name), statusBadge(a)),
     a.lastError ? h('div', { class: 'banner banner-error' }, a.lastError) : null,
+    quotaSection(a),
     h('h3', {}, 'Identitäten'),
     h('p', { class: 'muted small' }, 'Absender, die du mit diesem Konto verwenden kannst (z. B. Aliasse). Antworten wählen automatisch die passende Identität.'),
     h('div', { class: 'card-list' }, a.identities.map((i) => h('div', { class: 'ident-card' },
@@ -94,6 +96,30 @@ function accountDetail(c, a) {
     h('button', { class: 'btn', type: 'button', onClick: () => identityDialog(a, null) }, icon('plus', 16), 'Identität hinzufügen'),
     h('h3', {}, a.managed ? 'Konto-Einstellungen' : 'Server-Einstellungen'));
   accountForm(c, a, true);
+}
+
+function quotaSection(a) {
+  const box = h('div', { class: 'quota-box' });
+  const draw = () => {
+    box.replaceChildren(...[quotaView(a.quota) || h('p', { class: 'muted small' }, 'Noch nicht ermittelt.')].filter(Boolean));
+  };
+  draw();
+  const onQuota = (e) => {
+    if (!box.isConnected) { window.removeEventListener('wm-quota', onQuota); return; }
+    if (e.detail.accountId === a.id) draw();
+  };
+  window.addEventListener('wm-quota', onQuota);
+  const btn = h('button', { class: 'btn btn-small', type: 'button', onClick: async () => {
+    btn.disabled = true;
+    try {
+      const r = await post(`/accounts/${a.id}/quota`);
+      if (r.quota) a.quota = r.quota;
+      draw();
+    } catch (err) { toast(err.message, 'error'); } finally { btn.disabled = false; }
+  } }, icon('refresh', 15), 'Aktualisieren');
+  return h('section', { class: 'quota-sec' },
+    h('div', { class: 'section-head' }, h('h3', {}, 'Speicherplatz'), btn),
+    box);
 }
 
 function presetFor(email) {
@@ -322,6 +348,8 @@ async function davSection(c) {
       h('button', { class: 'btn btn-primary', type: 'button', onClick: () => addSourceDialog(c) }, icon('plus', 16), 'Server hinzufügen')),
     h('p', { class: 'muted small' }, 'Webmail zeigt und bearbeitet Kalender und Kontakte direkt auf deinem CalDAV/CardDAV-Server – z. B. Nextcloud, mailcow/SOGo, Radicale, Baïkal, mailbox.org, Fastmail oder iCloud (mit App-Passwort). Die Daten bleiben dort und sind weiterhin mit Handy und Thunderbird synchron.'),
     cols.errors.map((e) => h('div', { class: 'banner banner-error' }, `${e.sourceName}: ${e.message}`)),
+    contactSortSetting(),
+    h('h3', {}, 'Server'),
     info.sources.length ? h('div', { class: 'card-list' }, info.sources.map((s) => h('div', { class: 'ident-card' },
       h('div', { class: 'grow' }, h('strong', {}, s.name), h('div', { class: 'muted small' }, `${s.url} · ${s.username}`),
         h('ul', { class: 'col-list' }, colRows(String(s.id)))),
@@ -331,6 +359,24 @@ async function davSection(c) {
         davSection(c);
       })))) : h('div', { class: 'info-card' }, h('p', {}, 'Noch kein Server eingebunden.'),
       h('button', { class: 'btn', type: 'button', onClick: () => addSourceDialog(c) }, icon('plus', 16), 'Server hinzufügen')));
+}
+
+/** Kontakte: Sortierung und Anzeige der Namen (im Profil gespeichert) */
+function contactSortSetting() {
+  const cur = (state.user.settings || {}).contactSort === 'last' ? 'last' : 'first';
+  const sel = h('select', { 'aria-label': 'Kontakte sortieren nach' },
+    h('option', { value: 'first', selected: cur === 'first' }, 'Vorname Nachname – sortiert nach Vorname'),
+    h('option', { value: 'last', selected: cur === 'last' }, 'Nachname, Vorname – sortiert nach Nachname'));
+  sel.addEventListener('change', async () => {
+    try {
+      const r = await patch('/me', { settings: { contactSort: sel.value } });
+      state.user = r.user;
+      toast('Gespeichert');
+    } catch (err) { toast(err.message, 'error'); }
+  });
+  return h('section', { class: 'contact-sort' },
+    h('h3', {}, 'Kontakte'),
+    field('Namen anzeigen und sortieren', sel, 'Gilt für die Kontaktliste. Kontakte ohne Vor-/Nachname (z. B. Firmen) erscheinen mit ihrem gespeicherten Namen.'));
 }
 
 function addSourceDialog(c) {

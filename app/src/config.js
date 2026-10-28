@@ -23,6 +23,17 @@ module.exports = {
   loginMaxPerAccount: parseInt(env.LOGIN_MAX_PER_ACCOUNT, 10) || 5,
   loginMaxPerIp: parseInt(env.LOGIN_MAX_PER_IP, 10) || 20,
   loginWhitelist: env.LOGIN_WHITELIST || '',
+  // Speicherplatz-Anzeige: ab warn % orange, ab full % rot (QUOTA_WARN_PERCENT / QUOTA_FULL_PERCENT)
+  quotaPercent: (() => {
+    const clamp = (v, d) => { const n = parseInt(v, 10); return Number.isInteger(n) && n >= 1 && n <= 100 ? n : d; };
+    let warn = clamp(env.QUOTA_WARN_PERCENT, 80);
+    const full = clamp(env.QUOTA_FULL_PERCENT, 95);
+    if (warn >= full) {
+      console.warn(`[config] QUOTA_WARN_PERCENT (${warn}) muss kleiner als QUOTA_FULL_PERCENT (${full}) sein – Warnung wird ausgeschaltet`);
+      warn = full;
+    }
+    return { warn, full };
+  })(),
   loginFailDelayMs: env.LOGIN_FAIL_DELAY_MS !== undefined && env.LOGIN_FAIL_DELAY_MS !== '' ? parseInt(env.LOGIN_FAIL_DELAY_MS, 10) : 1000,
   allowRegistration: env.ALLOW_REGISTRATION === 'true',
   syncInitialMessages: parseInt(env.SYNC_INITIAL_MESSAGES, 10) || 1000,
