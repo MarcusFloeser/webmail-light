@@ -143,6 +143,8 @@ async function loadThreads(keep) {
       limit, offset: 0, q: cur.q, unread: cur.filter === 'unread' ? 1 : '', flagged: cur.filter === 'flagged' ? 1 : '',
     });
     if (folderId !== cur.folderId) return;
+    const fc = findFolder(folderId);
+    if (fc) lastCounts = { folderId, total: fc.folder.total, unseen: fc.folder.unseen };
     cur.threads = r.threads;
     cur.hasMore = r.hasMore;
     cur.canLoadOlder = r.canLoadOlder;
@@ -1072,17 +1074,32 @@ const reloadList = debounce(() => { if (root) loadThreads(true); }, 400);
 const reloadThread = debounce(() => { if (root && cur.threadId) openThread(cur.threadId, { soft: true }); }, 600);
 
 /** Seitenleisten-Zähler haben sich geändert -> Kopf der Liste aktualisieren */
+// Letzter bekannter Stand des offenen Ordners (Anzahl/ungelesen) – ändert er sich, Liste neu laden
+let lastCounts = { folderId: null, total: null, unseen: null };
+
 export function onCountsChanged() {
   if (!root || !els.count) return;
   const f = findFolder(cur.folderId);
-  if (f) els.count.textContent = f.folder.unseen ? `${f.folder.unseen} ungelesen` : '';
+  if (!f) return;
+  els.count.textContent = f.folder.unseen ? `${f.folder.unseen} ungelesen` : '';
+  // Ohne Live-Verbindung kommen neue Mails nur über die Zähler (Abfrage alle 20 s) –
+  // dann auch die Liste aktualisieren, nicht nur die Zahl am Ordner
+  const same = lastCounts.folderId === cur.folderId;
+  const totalMoved = same && lastCounts.total !== f.folder.total;
+  const unseenMoved = same && lastCounts.unseen !== f.folder.unseen;
+  lastCounts = { folderId: cur.folderId, total: f.folder.total, unseen: f.folder.unseen };
+  if (totalMoved || unseenMoved) reloadList();
+  // geöffnete Konversation nur bei neuen/entfernten Mails neu laden, nicht beim Lesen
+  if (totalMoved && cur.thread) reloadThread();
 }
 
 export function onFolderEvent(msg) {
   if (!root) return;
   if (msg.folderId === cur.folderId) {
     els.count.textContent = msg.unseen ? `${msg.unseen} ungelesen` : '';
-    if (msg.changed) reloadList();
+    const countsMoved = lastCounts.folderId === cur.folderId && (lastCounts.total !== msg.total || lastCounts.unseen !== msg.unseen);
+    lastCounts = { folderId: cur.folderId, total: msg.total, unseen: msg.unseen };
+    if (msg.changed || countsMoved) reloadList();
   }
   if (msg.changed && cur.thread && cur.thread.messages.some((m) => m.accountId === msg.accountId)) reloadThread();
 }
