@@ -61,6 +61,7 @@ async function main() {
   app.use('/api', auth.requireAuth, davRoutes.router());
   app.use('/api', auth.requireAuth, require('./admin-domains').router());
   app.use('/api', auth.requireAuth, require('./sieve/routes').router());
+  app.use('/api', auth.requireAuth, require('./pdf').router());
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unbekannter Endpunkt' }));
 
   // Oberfläche: versioniert unter /v/<kennung>/ (dauerhaft cachebar), index.html immer frisch
@@ -108,6 +109,12 @@ async function main() {
   hub.attach(server, auth.userFromRequest);
   server.listen(config.port, () => {
     console.log(`[http] Webmail läuft auf Port ${config.port}`);
+    // PDF-Dienst prüfen (startet evtl. gleichzeitig mit der Webmail – darum kurz warten)
+    setTimeout(() => require('./pdf').status(config.pdfServiceUrl, { fresh: true }).then((st) => {
+      if (st.pdf) console.log(`[config] PDF-Dienst erreichbar: ${st.detail} (jede Mail als eigene PDF-Datei)`);
+      else if (st.reason === 'off') console.log('[config] PDF-Dienst abgeschaltet (PDF_SERVICE_URL=off) – einzelne PDFs nur über den Druckdialog');
+      else console.warn(`[config] PDF-Dienst ${st.detail} – Container „pdf“ gestartet? (docker compose up -d)`);
+    }).catch(() => {}), 8000).unref();
     console.log(`[config] Speicher-Balken: orange ab ${config.quotaPercent.warn} %, rot ab ${config.quotaPercent.full} % (QUOTA_WARN_PERCENT / QUOTA_FULL_PERCENT)`);
   });
 

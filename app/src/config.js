@@ -60,6 +60,13 @@ module.exports = {
   authDavUrl: env.AUTH_DAV_URL || '',
   authDavName: env.AUTH_DAV_NAME || 'Kalender & Kontakte',
   maxBodyMb: parseInt(env.MAX_UPLOAD_MB, 10) || 35,
+  // Gotenberg-Dienst für „jede Mail als eigene PDF-Datei“ (leer = nur Druckdialog des Browsers)
+  // Leer/nicht gesetzt → Container „webmail-pdf“ aus docker-compose.yml verwenden, falls erreichbar; „off“ → aus
+  pdfServiceUrl: (() => {
+    const v = String(env.PDF_SERVICE_URL || '').trim();
+    if (/^(off|false|none|no|0)$/i.test(v)) return '';
+    return v || 'http://webmail-pdf:3000';
+  })(),
   passwordMinLength: parseInt(env.PASSWORD_MIN_LENGTH, 10) || 8,
 
   // Öffentliche Adresse der Webmail (für Links in E-Mails, z. B. https://mail.example.com)

@@ -155,20 +155,44 @@ async function removeDraft(accountId, draftMessageId) {
 }
 
 /**
- * Liefert true, wenn die Antwort im Ordner der Originalnachricht statt in
- * "Gesendet" abgelegt werden soll.
- *   replyFolder = 'original'      (Standard) – im Ordner der Originalnachricht
- *               = 'original_noinbox'          – ebenso, ausser Original liegt im Posteingang
- *               = 'sent'                      – immer "Gesendet"
+ * Liefert true, wenn eine Antwort im Ordner der beantworteten Nachricht abgelegt werden soll
+ * (Einstellung „Antworten im gleichen Ordner ablegen“). Sonst – und bei neuen Mails und
+ * Weiterleitungen – kommt die Kopie in „Gesendet“.
+ *   replyFolder = 'sent'      (Standard) – immer „Gesendet“
+ *               = 'original'             – Antworten im Ordner der beantworteten Nachricht
+ * (Der frühere Wert 'original_noinbox' wird wie 'original' behandelt, ausser im Posteingang.)
  */
 function replyFolderFor(user, body, original) {
   if (!original || !['reply', 'replyAll'].includes(body.mode)) return false;
-  const mode = (user.settings && user.settings.replyFolder) || 'original';
+  const mode = (user.settings && user.settings.replyFolder) || 'sent';
   if (mode === 'sent') return false;
   const special = original.folder_special;
   if (['\\Sent', '\\Trash', '\\Junk', '\\Drafts', '\\All', '\\Flagged'].includes(special)) return false;
   if (mode === 'original_noinbox' && special === '\\Inbox') return false;
   return true;
+}
+
+/** Diese Server legen per SMTP gesendete Mails selbst in „Gesendet“ ab – eine zweite Kopie wäre doppelt */
+const SERVER_SAVES_SENT = ['imap.gmail.com', 'outlook.office365.com', 'imap-mail.outlook.com'];
+
+/**
+ * „Gesendet“-Ordner des Kontos – fehlt er, wird er angelegt (gesendete Mails werden immer gespeichert).
+ * → IMAP-Pfad
+ */
+async function ensureSentFolder(accountId) {
+  const sent = await findSpecialFolder(accountId, '\\Sent');
+  if (sent) return sent.path;
+  const folders = await db.many('SELECT path, name, delimiter FROM folders WHERE account_id = $1', [accountId]);
+  const byName = folders.find((f) => /^(sent|sent items|sent messages|gesendet|gesendete elemente|gesendete objekte)$/i.test(f.name));
+  if (byName) return byName.path;
+  // Namensraum wie bei Courier/Cyrus („INBOX.Sent“), sonst oberste Ebene („Sent“)
+  const inbox = folders.find((f) => String(f.path).toUpperCase() === 'INBOX');
+  const delim = (inbox && inbox.delimiter) || '/';
+  const underInbox = folders.some((f) => String(f.path).toUpperCase().startsWith(`INBOX${delim}`.toUpperCase()));
+  const path = underInbox ? `INBOX${delim}Sent` : 'Sent';
+  await manager.get(accountId).createFolder(path);
+  console.log(`[send] Konto ${accountId}: Ordner „${path}“ angelegt (für gesendete Mails)`);
+  return path;
 }
 
 async function send(body, user) {
@@ -193,28 +217,28 @@ async function send(body, user) {
   const worker = manager.get(ident.id);
   const warnings = [];
 
-  // Antworten im Ordner der beantworteten Nachricht ablegen (Einstellung "replyFolder")
-  const replyTarget = replyFolderFor(user, body, original);
+  // Kopie ablegen – immer: Antworten auf Wunsch im Ordner der beantworteten Nachricht, sonst in „Gesendet“
   let filedIn = null;
-  if (replyTarget) {
-    filedIn = original.folder_special === '\\Inbox' ? 'Posteingang' : (original.folder_name || original.folder_path);
-    try {
-      const raw = await buildRaw(mail, true);
-      await manager.get(original.account_id).append(original.folder_path, raw, ['\\Seen']);
-    } catch (err) {
-      warnings.push(`Ablage im Ordner "${original.folder_name || original.folder_path}" fehlgeschlagen: ${err.message}`);
-    }
-  } else if (ident.save_sent) {
-    const sent = await findSpecialFolder(ident.id, '\\Sent');
-    if (sent) {
+  if (!SERVER_SAVES_SENT.includes(String(ident.imap_host || '').toLowerCase())) {
+    let raw;
+    try { raw = await buildRaw(mail, true); } catch (err) { warnings.push(`Kopie konnte nicht erstellt werden: ${err.message}`); }
+    let done = false;
+    if (raw && replyFolderFor(user, body, original)) {
       try {
-        const raw = await buildRaw(mail, true);
-        await worker.append(sent.path, raw, ['\\Seen']);
+        await manager.get(original.account_id).append(original.folder_path, raw, ['\\Seen']);
+        filedIn = original.folder_special === '\\Inbox' ? 'Posteingang' : (original.folder_name || original.folder_path);
+        done = true;
       } catch (err) {
-        warnings.push(`Kopie in "Gesendet" fehlgeschlagen: ${err.message}`);
+        warnings.push(`Ablage im Ordner „${original.folder_name || original.folder_path}“ fehlgeschlagen – stattdessen in „Gesendet“`);
       }
-    } else {
-      warnings.push('Kein "Gesendet"-Ordner gefunden – keine Kopie abgelegt');
+    }
+    if (raw && !done) {
+      try {
+        const path = await ensureSentFolder(ident.id);
+        await worker.append(path, raw, ['\\Seen']);
+      } catch (err) {
+        warnings.push(`Kopie in „Gesendet“ fehlgeschlagen: ${err.message}`);
+      }
     }
   }
   if (original) {
@@ -272,4 +296,4 @@ async function sendItip(ident, { to, subject, text, html, method, ics }) {
   return { ok: true, sent: list.length };
 }
 
-module.exports = { sendItip, loadIdentity, send, saveDraft, testSmtp, findSpecialFolder, removeDraft, replyFolderFor, buildMail };
+module.exports = { sendItip, loadIdentity, send, saveDraft, testSmtp, findSpecialFolder, ensureSentFolder, removeDraft, replyFolderFor, buildMail };

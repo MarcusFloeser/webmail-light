@@ -70,7 +70,26 @@ function accountList(c) {
           h('div', { class: 'muted small' }, `${a.identities.length} Identität(en) · ${a.folders.length} Ordner${a.lastSync ? ' · zuletzt ' + fullDate(a.lastSync) : ''}`),
           a.status === 'error' && a.lastError ? h('div', { class: 'error-text small' }, a.lastError) : null),
         a.enabled ? statusBadge(a) : h('span', { class: 'status-pill' }, 'deaktiviert'))))
-      : h('p', { class: 'muted' }, 'Noch keine Konten. Du kannst beliebig viele IMAP-Konten hinzufügen.'));
+      : h('p', { class: 'muted' }, 'Noch keine Konten. Du kannst beliebig viele IMAP-Konten hinzufügen.'),
+    sentSetting());
+}
+
+/** Ablage gesendeter Mails: immer gespeichert – Antworten wahlweise im gleichen Ordner */
+function sentSetting() {
+  const mode = (state.user.settings || {}).replyFolder || 'sent';
+  const cb = h('input', { type: 'checkbox', checked: mode !== 'sent' });
+  cb.addEventListener('change', async () => {
+    try {
+      const r = await patch('/me', { settings: { replyFolder: cb.checked ? 'original' : 'sent' } });
+      state.user = r.user;
+      toast('Gespeichert');
+    } catch (err) { toast(err.message, 'error'); cb.checked = !cb.checked; }
+  });
+  return h('section', { class: 'sent-setting' },
+    h('h3', {}, 'Gesendete Mails'),
+    h('p', { class: 'muted small' }, 'Von jeder gesendeten Mail wird eine Kopie gespeichert – neue Mails und Weiterleitungen im Ordner „Gesendet“ (fehlt er, wird er angelegt).'),
+    h('label', { class: 'check' }, cb, ' Antworten im gleichen Ordner wie die beantwortete Mail ablegen'),
+    h('p', { class: 'hint' }, 'Sonst landen auch Antworten in „Gesendet“. Antworten auf Mails aus Gesendet, Entwürfe, Papierkorb oder Spam kommen immer in „Gesendet“.'));
 }
 
 function accountDetail(c, a) {
@@ -186,7 +205,6 @@ function accountForm(c, a, append = false) {
       }), ' Gleiche Zugangsdaten wie IMAP'),
       smtpCreds),
     h('fieldset', {}, h('legend', {}, 'Optionen'),
-      h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'saveSent', checked: v.saveSent }), ' Gesendete Nachrichten im Ordner „Gesendet“ ablegen'),
       h('label', { class: 'check' }, h('input', { type: 'checkbox', name: 'enabled', checked: v.enabled }), ' Konto aktiv (synchronisieren)'),
       h('label', { class: 'check srv' }, h('input', { type: 'checkbox', name: 'allowInsecureTls', checked: v.allowInsecureTls }), ' Ungültige/selbstsignierte Zertifikate akzeptieren')),
     result,
@@ -239,7 +257,7 @@ function accountForm(c, a, append = false) {
       if (!p) return;
       set('imapHost', p.imapHost); set('imapPort', p.imapPort); set('imapSecurity', p.imapSecurity);
       set('smtpHost', p.smtpHost); set('smtpPort', p.smtpPort); set('smtpSecurity', p.smtpSecurity);
-      set('saveSent', p.saveSent);
+
       set('imapUser', email.value);
       if (!form.querySelector('[name=name]').value) set('name', p.guessed ? email.value : p.name);
       hint.hidden = !(p.hint || p.guessed);
@@ -433,16 +451,7 @@ function profileSection(c) {
     } catch (err) { toast(err.message, 'error'); }
   });
 
-  const replySel = h('select', {},
-    [['original', 'Im Ordner der beantworteten Nachricht'],
-      ['original_noinbox', 'Im Ordner der beantworteten Nachricht – ausser Posteingang (dann „Gesendet“)'],
-      ['sent', 'Immer im Ordner „Gesendet“']]
-      .map(([v, l]) => h('option', { value: v, selected: (state.user.settings.replyFolder || 'original') === v }, l)));
-  replySel.addEventListener('change', async () => {
-    const r = await patch('/me', { settings: { replyFolder: replySel.value } });
-    state.user = r.user;
-    toast('Gespeichert');
-  });
+
   const imgContacts = h('label', { class: 'check' }, h('input', {
     type: 'checkbox', checked: state.user.settings.imagesFromContacts !== false,
     onChange: async (e) => {
@@ -463,7 +472,6 @@ function profileSection(c) {
       },
     }, 'Zurücksetzen')) : null;
   const mailPrefs = h('div', { class: 'form-grid narrow' },
-    field('Antworten ablegen', replySel, 'Gilt für „Antworten“ und „Allen antworten“. Antworten auf Nachrichten aus Gesendet, Papierkorb oder Spam landen immer in „Gesendet“.'),
     imgContacts,
     trustedInfo);
 

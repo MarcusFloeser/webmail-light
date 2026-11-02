@@ -382,6 +382,15 @@ class AccountWorker {
         }
       }
 
+      // 3c) Einmalig: Eingangszeit (INTERNALDATE) für ältere, schon gespeicherte Mails nachtragen
+      if (localSet.size) {
+        try {
+          if (await this.backfillReceived(c, folder)) changed = true;
+        } catch (err) {
+          console.warn(`[imap ${this.id}] Eingangszeit ${path}: ${err.message}`);
+        }
+      }
+
       const unseenUids = mb.exists ? ((await c.search({ seen: false }, { uid: true })) || []) : [];
       mbInfo = {
         uidValidity,
@@ -427,6 +436,33 @@ class AccountWorker {
     if (changed || folder.unseen !== mbInfo.unseen || folder.total !== mbInfo.total) {
       this.emitFolder(folder.id, mbInfo, changed, newForNotify);
     }
+  }
+
+  /** Eingangszeit für Mails ohne received_at vom Server holen (je Durchlauf höchstens 5000). → true bei Änderungen */
+  async backfillReceived(c, folder) {
+    const rows = await db.many('SELECT uid FROM messages WHERE folder_id = $1 AND received_at IS NULL LIMIT 5000', [folder.id]);
+    if (!rows.length) return false;
+    const now = Date.now();
+    let n = 0;
+    for (const part of chunk(rows.map((r) => Number(r.uid)).sort((a, b) => a - b), 500)) {
+      const vals = [];
+      for await (const m of c.fetch(uidRange(part), { uid: true, internalDate: true }, { uid: true })) {
+        const d = m.internalDate instanceof Date && !isNaN(m.internalDate) && m.internalDate.getTime() <= now + 3600000 ? m.internalDate : null;
+        if (d) vals.push({ uid: m.uid, d: d.toISOString() });
+      }
+      if (vals.length) {
+        await db.query(
+          `UPDATE messages m SET received_at = v.d::timestamptz
+             FROM jsonb_to_recordset($2::jsonb) AS v(uid bigint, d text)
+            WHERE m.folder_id = $1 AND m.uid = v.uid AND m.received_at IS NULL`,
+          [folder.id, JSON.stringify(vals)]);
+        n += vals.length;
+      }
+      // Nicht abrufbare (z. B. inzwischen gelöschte) nicht endlos erneut versuchen
+      await db.query('UPDATE messages SET received_at = coalesce(date, now()) WHERE folder_id = $1 AND uid = ANY($2::bigint[]) AND received_at IS NULL', [folder.id, part]);
+    }
+    if (n) console.log(`[imap ${this.id}] ${folder.path}: Eingangszeit für ${n} Mail(s) nachgetragen`);
+    return n > 0;
   }
 
   /** Bestehende Mails mit Anhang-Symbol neu prüfen (nur Struktur laden, kein Inhalt). → true, wenn sich etwas geändert hat */

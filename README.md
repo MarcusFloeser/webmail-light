@@ -15,7 +15,7 @@ Browser-Mailclient für mehrere Benutzer, komplett als Docker-Compose-Stack.
 | Mehrere Konten | Beliebig viele IMAP/SMTP-Konten pro Benutzer, je eigener Sync-Worker |
 | Mehrere Identitäten | Pro Konto beliebig viele Absender (Name, Adresse, Reply-To, Auto-Bcc, Signatur). Antworten wählen automatisch die Identität, an die die Mail ging |
 
-Außerdem: Favoriten-Ordner (per Rechtsklick oder Stern oben in der Ordnerliste anpinnen, auch kontoübergreifend; im Profil gespeichert), HTML-Mails in einer Sandbox ohne Skripte, externe Bilder standardmäßig blockiert (bei Absendern aus den eigenen Kontakten automatisch angezeigt, abschaltbar im Profil; sonst pro Absender freigebbar), einklappbare Terminspalte rechts in der Mail-Ansicht mit den Terminen der nächsten 4 Wochen, Signatur-Editor mit Formatierung, Farben, Links und Logo (Bilder werden als eingebettete CID-Bilder versendet; HTML-Quelltext umschaltbar), Empfänger als Adress-Chips (Name + Adresse, per Drag & Drop zwischen An/Cc/Bcc verschiebbar), Rich-Text-Editor, Anhänge (auch per Drag & Drop), Entwürfe mit Autosave, Weiterleiten inkl. Anhängen oder als .eml, Drucken bzw. als PDF speichern (einzelne Nachricht, ganze Konversation oder mehrere ausgewählte; auch mit Strg+P), Suche, Tastenkürzel, Dark Mode, Mobil-Layout, verschiebbare Spaltentrenner (Breiten pro Browser gespeichert, Doppelklick = Standard), Farbschema automatisch/hell/dunkel, eigene Hintergrundfarbe und eigenes Hintergrundbild pro Benutzer (Einstellungen → Darstellung; Schrift wird automatisch hell/dunkel gewählt; Mail-Liste, Kontakte, Kalender und Einstellungen optional in derselben Farbe).
+Außerdem: Favoriten-Ordner (per Rechtsklick oder Stern oben in der Ordnerliste anpinnen, auch kontoübergreifend; im Profil gespeichert), HTML-Mails in einer Sandbox ohne Skripte, externe Bilder standardmäßig blockiert (bei Absendern aus den eigenen Kontakten automatisch angezeigt, abschaltbar im Profil; sonst pro Absender freigebbar), einklappbare Terminspalte rechts in der Mail-Ansicht mit den Terminen der nächsten 4 Wochen, Signatur-Editor mit Formatierung, Farben, Links und Logo (Bilder werden als eingebettete CID-Bilder versendet; HTML-Quelltext umschaltbar), Empfänger als Adress-Chips (Name + Adresse, per Drag & Drop zwischen An/Cc/Bcc verschiebbar), Rich-Text-Editor, Anhänge (auch per Drag & Drop), Entwürfe mit Autosave, Weiterleiten inkl. Anhängen oder als .eml, Drucken bzw. als PDF speichern (einzelne Nachricht, ganze Konversation oder mehrere ausgewählte – sind Mails in der Liste ausgewählt, drucken Druck-Symbol und Strg+P alle ausgewählten, sonst die geöffnete Konversation; wahlweise alles in einem Dokument oder jede Mail als eigene PDF-Datei, siehe „PDF-Export“; vorher wählbar, welche Inhalte erscheinen: Betreff, Von, An, Cc, Bcc, Datum, Anhangsliste und zitierte frühere Nachrichten; dazu ein Muster für den PDF-Dateinamen, z. B. `%Y-%m-%d_%s` → `2026-10-31_Projekt Seeblick.pdf` mit den Bausteinen %Y/%y Jahr, %m Monat, %d Tag, %H/%M Uhrzeit, %s Betreff, %b Betreff ohne Re:/AW:/Fwd:, %f/%e Absender-Name/-Adresse, %n Anzahl Nachrichten, wahlweise mit _ statt Leerzeichen; Datum = neueste gedruckte Nachricht – die Auswahl wird im Browser gemerkt), Mehrfachauswahl in der Mail-Liste (Häkchen, Strg/Cmd-Klick einzeln, Shift-Klick erweitert die Auswahl bis zur zuletzt angeklickten bzw. geöffneten Mail), Mail-Liste sortiert nach Eingang beim Server (nicht nach dem Datum im Mailkopf – so stehen auch verspätet zugestellte Mails oder Mails von Absendern mit falscher Uhr oben; bestehende Mails erhalten ihre Eingangszeit beim nächsten Sync), Mail-Liste lädt beim Scrollen ans Ende automatisch weitere Nachrichten (zuerst aus der Datenbank, dann ältere vom Server), Suche, Tastenkürzel, Dark Mode, Mobil-Layout, verschiebbare Spaltentrenner (Breiten pro Browser gespeichert, Doppelklick = Standard), Farbschema automatisch/hell/dunkel, eigene Hintergrundfarbe und eigenes Hintergrundbild pro Benutzer (Einstellungen → Darstellung; Schrift wird automatisch hell/dunkel gewählt; Mail-Liste, Kontakte, Kalender und Einstellungen optional in derselben Farbe).
 
 ## Architektur
 
@@ -109,9 +109,32 @@ Verbindung prüfen: `docker compose exec app node src/tools/ldap-check.js marcus
 
 Ohne LDAP-Konfiguration kann mit `PASSWORD_HELP_TEXT` ein Hinweis („Wende dich an …“) hinter „Passwort vergessen?“ hinterlegt werden.
 
+## Gesendete Mails
+
+Von jeder gesendeten Mail wird immer eine Kopie gespeichert: neue Mails und Weiterleitungen im Ordner „Gesendet“ (fehlt er, legt die Webmail ihn an). Unter *Einstellungen → E-Mail-Konten* lässt sich einschalten, dass **Antworten im gleichen Ordner** wie die beantwortete Mail abgelegt werden (Standard: aus, also ebenfalls „Gesendet“). Antworten auf Mails aus Gesendet, Entwürfe, Papierkorb oder Spam – und wenn die Ablage im Ordner fehlschlägt – landen in „Gesendet“. Ausnahme: Gmail und Microsoft 365 legen per SMTP gesendete Mails selbst ab; dort speichert die Webmail keine zweite Kopie.
+
 ## Speicherplatz
 
 Unter jedem Konto in der Ordnerleiste und in den Kontoeinstellungen sieht der Benutzer, wie viel Platz sein Postfach belegt („700 MB von 5 GB“), als Balken: grün, ab `QUOTA_WARN_PERCENT` (80 %) orange, ab `QUOTA_FULL_PERCENT` (95 %) rot – mit einem Hinweis, wie man Platz schafft. Die Werte kommen vom Mailserver (IMAP QUOTA, bei mailcow vorhanden), werden alle 15 Minuten und nach „Papierkorb leeren“ aktualisiert und lassen sich in den Kontoeinstellungen sofort neu abfragen. Der Admin sieht dieselben Balken in der Benutzerübersicht.
+
+
+## PDF-Export
+
+Im Druckdialog (Drucksymbol, Auswahl-Leiste oder Strg+P) lässt sich wählen:
+
+- **Ein Dokument** – alle gewählten Mails zusammen; der Druckdialog des Browsers öffnet sich, als Ziel „Als PDF speichern“.
+- **Jede Mail als eigene PDF-Datei** – pro Nachricht ein PDF, benannt nach dem Dateinamen-Muster (z. B. `%Y-%m-%d_%s`, gleiche Namen werden mit „(2)“ nummeriert). Bei mehreren Mails kommen sie zusammen als ZIP-Datei, bei einer Mail direkt als PDF.
+
+Für die Einzel-PDFs startet `docker compose` den Container **pdf** ([Gotenberg](https://gotenberg.dev), Chromium). Er hängt nur im internen Netz ohne Internetzugang, lädt ausschliesslich das übergebene Dokument (`--chromium-allow-list`), führt kein JavaScript aus, und die Webmail setzt zusätzlich eine strenge Content-Security-Policy. Darum sind **externe Bilder in den Einzel-PDFs nicht enthalten** (eingebettete Bilder schon); im Modus „Ein Dokument“ erscheinen sie wie gewohnt bei Absendern aus den Kontakten. Der Container braucht im Betrieb rund 200–400 MB RAM.
+
+Nicht gewünscht? Dienst `pdf` aus `docker-compose.yml` entfernen und `PDF_SERVICE_URL=off` in `.env` setzen – dann öffnet „Jede Mail als eigene PDF-Datei“ den Druckdialog nacheinander für jede Mail, jeweils mit passendem Dateinamen.
+
+Nach dem Update: `docker compose pull pdf && docker compose up -d` (nicht nur `restart` – sonst wird der neue Container nicht angelegt und die App sieht die neue Einstellung nicht).
+
+**Meldung „PDF-Dienst nicht erreichbar“ / „Kein PDF-Dienst eingerichtet“?** Die Webmail prüft den Dienst über `GET /health` und schreibt beim Start eine Zeile ins Log (`docker compose logs app | grep PDF`). Admins sehen den genauen Grund auch im Druckdialog.
+- `docker compose ps` – läuft `pdf`? Falls nicht: `docker compose up -d`.
+- Eigene `docker-compose.yml` im Einsatz? Dann den Dienst `pdf` (siehe mitgelieferte Datei) übernehmen; er muss im selben Netz wie `app` hängen und den Alias `webmail-pdf` haben.
+- „Kein PDF-Dienst eingerichtet“ heisst: `PDF_SERVICE_URL=off` ist gesetzt bzw. (bei der Vorversion) leer – Zeile entfernen, dann `docker compose up -d`.
 
 ## Filter & Abwesenheitsnotiz
 
@@ -190,6 +213,7 @@ Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
 | `AUTH_ADMINS` | – | Kommagetrennte Logins mit Admin-Rechten |
 | `AUTH_CREATE_ACCOUNT` | true | Postfach beim ersten Login als Konto einrichten |
 | `LOGIN_MAX_PER_ACCOUNT` / `LOGIN_MAX_PER_IP` / `LOGIN_WHITELIST` | 5 / 20 / – | Schutz vor Passwort-Raten (siehe oben) |
+| `PDF_SERVICE_URL` | `http://webmail-pdf:3000` | PDF-Dienst (Gotenberg) für „jede Mail als eigene PDF-Datei“; leer/nicht gesetzt = Container `webmail-pdf` verwenden, wenn er erreichbar ist; `off` = abgeschaltet, dann Druckdialog je Mail |
 | `QUOTA_WARN_PERCENT` / `QUOTA_FULL_PERCENT` | 80 / 95 | Speicherplatz-Balken: ab diesem Füllstand orange bzw. rot (Ordnerleiste, Kontoeinstellungen, Benutzerübersicht) |
 | `AUTH_DAV_URL` / `AUTH_DAV_NAME` | – / Kalender & Kontakte | CalDAV/CardDAV-Server, der beim IMAP-Login mit denselben Zugangsdaten eingebunden wird |
 | `ADMIN_USERNAME` / `ADMIN_PASSWORD` | admin / zufällig | Lokaler Administrator beim allerersten Start (bei `AUTH_MODE=imap` nur, wenn ein Passwort gesetzt ist) |

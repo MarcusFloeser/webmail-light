@@ -444,14 +444,14 @@ function router() {
 
     const rows = await db.many(
       `WITH page AS (
-         SELECT thread_id, max(date) AS last_date,
+         SELECT thread_id, max(coalesce(received_at, date)) AS last_date,
                 bool_or(NOT ('\\Seen' = ANY(flags))) AS unread,
                 bool_or('\\Flagged' = ANY(flags)) AS flagged,
                 bool_or('\\Answered' = ANY(flags)) AS answered,
                 array_agg(id ORDER BY date) AS ids
            FROM messages WHERE folder_id = $1 ${filter}
           GROUP BY thread_id
-          ORDER BY max(date) DESC NULLS LAST
+          ORDER BY max(coalesce(received_at, date)) DESC NULLS LAST, max(id) DESC
           LIMIT $2 OFFSET $3)
        SELECT p.thread_id, p.last_date, p.unread, p.flagged, p.answered, p.ids,
               agg.count, agg.has_attachments, agg.participants,
@@ -468,9 +468,9 @@ function router() {
          CROSS JOIN LATERAL (
            SELECT subject, preview, from_name, from_addr FROM messages m
             WHERE m.folder_id = $1 AND m.thread_id = p.thread_id
-            ORDER BY date DESC NULLS LAST LIMIT 1
+            ORDER BY coalesce(received_at, date) DESC NULLS LAST, m.id DESC LIMIT 1
          ) latest
-        ORDER BY p.last_date DESC NULLS LAST`, params);
+        ORDER BY p.last_date DESC NULLS LAST, p.ids[array_upper(p.ids, 1)] DESC`, params);
 
     const hasMore = rows.length > limit;
     res.json({

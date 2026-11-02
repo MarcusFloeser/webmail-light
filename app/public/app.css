@@ -269,6 +269,9 @@ input[type=checkbox] { accent-color: var(--accent); width: 16px; height: 16px; m
 .list-loading, .empty-list { padding: 40px 20px; text-align: center; color: var(--muted); list-style: none; }
 .list-foot { padding: 12px; text-align: center; }
 .list-foot:empty { display: none; }
+.spinner-small { width: 12px; height: 12px; border-width: 2px; }
+.thread-list { user-select: none; }
+.thread-preview, .thread-subject { user-select: none; }
 
 .reader-pane { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); min-height: 0; }
 .reader { flex: 1; display: flex; flex-direction: column; min-height: 0; outline: none; }
@@ -1228,3 +1231,17 @@ input[type=checkbox].switch:checked::after { transform: translateX(18px); }
 .msg-from .addr-link { display: inline-flex; align-items: baseline; gap: 0; min-width: 0; max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .book-io { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
 .book-empty { display: grid; gap: 6px; justify-items: start; }
+
+/* ===================================================================== Druck-/PDF-Optionen */
+.print-opts { display: grid; gap: 10px; }
+.print-opts-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px 16px; }
+@media (max-width: 560px) { .print-opts-grid { grid-template-columns: 1fr; } }
+.print-out { display: grid; gap: 4px; padding-top: 8px; border-top: 1px solid var(--border); }
+.print-out .hint { margin: 2px 0 0; }
+.print-fname-box { display: grid; gap: 6px; padding-top: 8px; border-top: 1px solid var(--border); }
+.print-fname-box .field { display: grid; gap: 4px; }
+.print-fname { width: 100%; font-family: var(--mono, ui-monospace, monospace); }
+.print-fname-preview { overflow-wrap: anywhere; }
+.print-codes { display: flex; flex-wrap: wrap; gap: 4px; }
+.print-codes .chip { cursor: pointer; font-size: 12px; border: 1px solid var(--border); background: transparent; color: inherit; border-radius: 999px; padding: 2px 8px; }
+.print-codes .chip:hover { background: var(--hover, rgba(127,127,127,.12)); }

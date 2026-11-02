@@ -108,6 +108,8 @@ CREATE INDEX IF NOT EXISTS messages_irt_idx     ON messages(account_id, in_reply
 CREATE INDEX IF NOT EXISTS messages_refs_idx    ON messages USING GIN (refs);
 CREATE INDEX IF NOT EXISTS messages_thread_idx  ON messages(thread_id);
 CREATE INDEX IF NOT EXISTS messages_folder_date ON messages(folder_id, date DESC);
+-- Eingangszeit beim Server (IMAP INTERNALDATE): Sortierung der Liste, unabhängig vom (evtl. falschen) Datum im Mailkopf
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS received_at TIMESTAMPTZ;
 CREATE INDEX IF NOT EXISTS messages_from_idx    ON messages(account_id, from_addr);
 
 -- CalDAV/CardDAV-Server des Benutzers

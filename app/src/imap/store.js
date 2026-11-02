@@ -51,17 +51,21 @@ async function insertMessages(accountId, folderId, fetched) {
       const from = addrList(env.from)[0] || addrList(env.sender)[0] || { name: '', address: '' };
       const date = env.date instanceof Date && !isNaN(env.date) ? env.date
         : (m.internalDate instanceof Date ? m.internalDate : null);
+      // Eingang beim Server; fehlt er, die Zeit des Abrufs (nie in der Zukunft)
+      const received = m.internalDate instanceof Date && !isNaN(m.internalDate) && m.internalDate.getTime() <= Date.now() + 3600000
+        ? m.internalDate : new Date();
       const r = await t.query(
         `INSERT INTO messages (account_id, folder_id, uid, message_id, in_reply_to, refs, thread_id, subject,
-                               from_name, from_addr, to_list, cc_list, date, flags, size, has_attachments)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
-         ON CONFLICT (folder_id, uid) DO UPDATE SET flags = EXCLUDED.flags
+                               from_name, from_addr, to_list, cc_list, date, flags, size, has_attachments, received_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17)
+         ON CONFLICT (folder_id, uid) DO UPDATE SET flags = EXCLUDED.flags,
+                     received_at = coalesce(messages.received_at, EXCLUDED.received_at)
          RETURNING (xmax = 0) AS inserted`,
         [accountId, folderId, m.uid, messageId, inReplyTo, refs, threadId,
           String(env.subject || '').slice(0, 1000),
           from.name.slice(0, 300), from.address.slice(0, 300),
           JSON.stringify(addrList(env.to)), JSON.stringify(addrList(env.cc)),
-          date, [...(m.flags || [])], m.size || 0, hasAttachments(m.bodyStructure)]);
+          date, [...(m.flags || [])], m.size || 0, hasAttachments(m.bodyStructure), received]);
       if (r.rows[0] && r.rows[0].inserted) inserted++;
     }
   });

@@ -6,7 +6,7 @@ import { get, post, patch, del } from './api.js';
 import { state, findFolder, folderLabel, loadAccounts, SPECIAL_ICONS, applyFolderCounts, isContact, imagesFromContacts, notify as notifyState, isFavorite, favoriteFolders, toggleFavorite, moveFavorite } from './state.js';
 import * as compose from './compose.js';
 import * as contactsView from './contacts.js';
-import { printMessages } from './print.js';
+import { printMessages, printOptionsDialog } from './print.js';
 import { mailBackground } from './appearance.js';
 
 const PAGE = 50;
@@ -22,6 +22,9 @@ const cur = {
   q: '',
   filter: 'all',
   selected: new Set(),
+  anchor: null,      // Ausgangspunkt für Shift-Auswahl
+  autoBusy: false,   // gerade automatisch weitere Nachrichten laden
+  olderDone: null,   // Ordner, in dem der Server keine älteren Nachrichten mehr hat
   thread: null,
   loading: false,
 };
@@ -63,6 +66,7 @@ export async function render(main, route) {
   if (cur.folderId !== folderId) {
     cur.folderId = folderId;
     cur.selected.clear();
+    cur.anchor = null;
     cur.q = '';
     els.search.value = '';
     cur.filter = 'all';
@@ -108,7 +112,7 @@ function mountLayout(main) {
       h('div', { class: 'search-wrap' }, icon('search', 16), els.search),
       els.filters),
     els.bulk,
-    h('div', { class: 'list-scroll' }, els.list, els.foot));
+    els.scroll = h('div', { class: 'list-scroll', onScroll: () => autoLoadCheck() }, els.list, els.foot));
 
   root = h('div', { class: 'mail-view' }, listPane, h('section', { class: 'reader-pane' }, els.reader));
   clear(main, root);
@@ -132,8 +136,11 @@ function renderListHead() {
 
 // ====================================================================== Thread-Liste
 
+let listSeq = 0; // nur die jüngste Anfrage darf die Liste setzen (ältere Antworten können später eintreffen)
+
 async function loadThreads(keep) {
   const folderId = cur.folderId;
+  const seq = ++listSeq;
   const limit = keep ? Math.max(PAGE, cur.threads.length) : PAGE;
   if (!keep) {
     clear(els.list, h('li', { class: 'list-loading' }, h('span', { class: 'spinner' })));
@@ -142,7 +149,7 @@ async function loadThreads(keep) {
     const r = await get(`/folders/${folderId}/threads`, {
       limit, offset: 0, q: cur.q, unread: cur.filter === 'unread' ? 1 : '', flagged: cur.filter === 'flagged' ? 1 : '',
     });
-    if (folderId !== cur.folderId) return;
+    if (folderId !== cur.folderId || seq !== listSeq) return;
     const fc = findFolder(folderId);
     if (fc) lastCounts = { folderId, total: fc.folder.total, unseen: fc.folder.unseen };
     cur.threads = r.threads;
@@ -153,15 +160,20 @@ async function loadThreads(keep) {
     for (const id of [...cur.selected]) if (!valid.has(id)) cur.selected.delete(id);
     renderThreads();
   } catch (err) {
+    if (seq !== listSeq) return;
+    if (keep && cur.threads.length) { console.warn('Liste aktualisieren:', err.message); return; }
     clear(els.list, h('li', { class: 'empty-list' }, err.message));
   }
 }
 
 async function loadMore() {
+  const folderId = cur.folderId;
+  const seq = listSeq;
   const r = await get(`/folders/${cur.folderId}/threads`, {
     limit: PAGE, offset: cur.threads.length, q: cur.q,
     unread: cur.filter === 'unread' ? 1 : '', flagged: cur.filter === 'flagged' ? 1 : '',
   });
+  if (folderId !== cur.folderId || seq !== listSeq) return;
   const known = new Set(cur.threads.map((t) => t.threadId));
   cur.threads.push(...r.threads.filter((t) => !known.has(t.threadId)));
   cur.hasMore = r.hasMore;
@@ -180,22 +192,57 @@ function renderThreads() {
     clear(els.list, cur.threads.map(threadItem));
   }
   const btns = [];
-  if (cur.hasMore) btns.push(h('button', { class: 'btn btn-small', onClick: () => loadMore().catch((e) => toast(e.message, 'error')) }, 'Weitere anzeigen'));
+  if (cur.hasMore) btns.push(h('button', { class: 'btn btn-small more-btn', dataset: { auto: 'more' }, onClick: () => runLoad('more') }, 'Weitere anzeigen'));
   else if (cur.canLoadOlder && !cur.q && cur.filter === 'all') {
-    btns.push(h('button', {
-      class: 'btn btn-small', onClick: async (e) => {
-        e.currentTarget.disabled = true;
-        e.currentTarget.textContent = 'Lade ältere Nachrichten vom Server…';
-        try {
-          const r = await post(`/folders/${cur.folderId}/load-older`);
-          if (!r.loaded) toast('Keine älteren Nachrichten vorhanden');
-          await loadThreads(true);
-        } catch (err) { toast(err.message, 'error'); }
-      },
-    }, 'Ältere Nachrichten vom Server laden'));
+    btns.push(h('button', { class: 'btn btn-small more-btn', dataset: { auto: cur.olderDone === cur.folderId ? '' : 'older' }, onClick: () => runLoad('older', true) },
+      'Ältere Nachrichten vom Server laden'));
   }
   clear(els.foot, btns);
   renderBulk();
+  requestAnimationFrame(() => autoLoadCheck());
+}
+
+/** Weitere Nachrichten holen: 'more' = nächste Seite aus der Datenbank, 'older' = ältere vom IMAP-Server */
+async function runLoad(kind, manual = false) {
+  if (cur.autoBusy) return;
+  cur.autoBusy = true;
+  const folderId = cur.folderId;
+  const btn = els.foot.querySelector('.more-btn');
+  if (btn) {
+    btn.disabled = true;
+    btn.replaceChildren(h('span', { class: 'spinner spinner-small' }), kind === 'older' ? ' Lade ältere Nachrichten vom Server…' : ' Lade weitere…');
+  }
+  try {
+    if (kind === 'more') await loadMore();
+    else {
+      const r = await post(`/folders/${folderId}/load-older`);
+      if (!r.loaded) {
+        cur.olderDone = folderId;
+        if (manual) toast('Keine älteren Nachrichten vorhanden');
+      }
+      if (folderId === cur.folderId) await loadThreads(true);
+    }
+  } catch (err) {
+    toast(err.message, 'error');
+    // nicht in einer Schleife wiederholen: automatisch erst nach einer Pause wieder versuchen
+    cur.autoErrorAt = Date.now();
+    if (kind === 'older') cur.olderDone = folderId;
+    if (folderId === cur.folderId) renderThreads();
+  } finally {
+    cur.autoBusy = false;
+  }
+  if (folderId === cur.folderId) requestAnimationFrame(() => autoLoadCheck());
+}
+
+/** Beim Scrollen ans Listenende automatisch nachladen */
+function autoLoadCheck() {
+  const sc = els.scroll;
+  if (!sc || cur.autoBusy || !sc.isConnected) return;
+  if (cur.autoErrorAt && Date.now() - cur.autoErrorAt < 30000) return;
+  const btn = els.foot && els.foot.querySelector('.more-btn:not([disabled])');
+  if (!btn || !btn.dataset.auto) return;
+  if (sc.scrollTop + sc.clientHeight < sc.scrollHeight - 300) return;
+  runLoad(btn.dataset.auto);
 }
 
 function threadItem(t) {
@@ -205,8 +252,9 @@ function threadItem(t) {
     type: 'checkbox', class: 'sel', 'aria-label': 'Auswählen', checked,
     onClick: (e) => {
       e.stopPropagation();
-      if (e.currentTarget.checked) cur.selected.add(t.threadId); else cur.selected.delete(t.threadId);
-      li.classList.toggle('selected', e.currentTarget.checked);
+      if (e.shiftKey && cur.anchor != null && selectRange(t.threadId, e.currentTarget.checked)) return;
+      setSelected(t.threadId, e.currentTarget.checked);
+      cur.anchor = t.threadId;
       renderBulk();
     },
   });
@@ -224,15 +272,20 @@ function threadItem(t) {
     role: 'option', 'aria-selected': String(cur.threadId === t.threadId),
     draggable: 'true', tabindex: '-1',
     dataset: { threadId: t.threadId },
+    onMousedown: (e) => { if (e.shiftKey) e.preventDefault(); }, // keine Textmarkierung bei Shift-Klick
     onClick: (e) => {
+      if (e.shiftKey) {
+        // Auswahl vom letzten angeklickten (bzw. geöffneten) Eintrag bis hierher erweitern
+        const from = cur.anchor != null ? cur.anchor : cur.threadId;
+        if (from != null && selectRange(t.threadId, true, from)) return;
+      }
       if (e.shiftKey || e.ctrlKey || e.metaKey) {
-        const on = !cur.selected.has(t.threadId);
-        if (on) cur.selected.add(t.threadId); else cur.selected.delete(t.threadId);
-        cb.checked = on;
-        li.classList.toggle('selected', on);
+        setSelected(t.threadId, !cur.selected.has(t.threadId));
+        cur.anchor = t.threadId;
         renderBulk();
         return;
       }
+      cur.anchor = t.threadId;
       location.hash = `#/mail/${cur.folderId}/${t.threadId}`;
     },
     onDragstart: (e) => {
@@ -258,6 +311,27 @@ function threadItem(t) {
   return li;
 }
 
+function setSelected(threadId, on) {
+  if (on) cur.selected.add(threadId); else cur.selected.delete(threadId);
+  const li = els.list && els.list.querySelector(`.thread[data-thread-id="${threadId}"]`);
+  if (li) {
+    li.classList.toggle('selected', on);
+    const cb = li.querySelector('input.sel');
+    if (cb) cb.checked = on;
+  }
+}
+
+/** Alle Einträge zwischen Anker und threadId (ein)schliessen bzw. abwählen. → false, wenn kein Bereich möglich */
+function selectRange(threadId, on, from = cur.anchor) {
+  const a = cur.threads.findIndex((x) => x.threadId === from);
+  const b = cur.threads.findIndex((x) => x.threadId === threadId);
+  if (a < 0 || b < 0) return false;
+  // Der geöffnete Ausgangseintrag gehört beim ersten Shift-Klick mit zur Auswahl
+  for (let i = Math.min(a, b); i <= Math.max(a, b); i++) setSelected(cur.threads[i].threadId, on);
+  renderBulk();
+  return true;
+}
+
 function highlightActive() {
   if (!els.list) return;
   for (const li of els.list.querySelectorAll('.thread')) {
@@ -280,8 +354,7 @@ function renderBulk() {
     iconButton('star', 'Markieren', async () => { await action(ids(), 'flag'); done(); }),
     iconButton('archive', 'Archivieren', async () => { await action(ids(), 'archive'); done(); }),
     iconButton('move', 'Verschieben', () => moveDialog(ids(), done)),
-    iconButton('print', 'Drucken', () => printGroups(cur.threads.filter((t) => cur.selected.has(t.threadId)).map((t) => t.messageIds),
-      n > 1 ? `${n} Konversationen` : undefined)),
+    iconButton('print', n > 1 ? `${n} ausgewählte Konversationen drucken` : 'Drucken', () => printSelection()),
     iconButton('trash', 'Löschen', async () => { await action(ids(), 'delete'); done(); }),
     h('button', { class: 'link-btn', type: 'button', onClick: () => { cur.selected.clear(); renderThreads(); } }, 'Aufheben'));
 }
@@ -723,12 +796,40 @@ function remoteAllowedFor(p) {
   return trustedSenders().has(sender) || (imagesFromContacts() && isContact(sender));
 }
 
-/** Konversationen drucken: groups = [[messageId, …], …] */
-function printGroups(groups, title) {
-  return printMessages(groups, { getBody: (id) => bodyCache.get(id), allowRemote: remoteAllowedFor, title });
+/** Beispieldaten für die Dateinamen-Vorschau im Druckdialog */
+function printSample(groups) {
+  const ids = new Set(groups.flat());
+  const count = ids.size;
+  if (cur.thread && cur.thread.messages.some((m) => ids.has(m.id))) {
+    const msgs = cur.thread.messages.filter((m) => ids.has(m.id));
+    const newest = msgs.reduce((a, b) => (new Date(b.date) > new Date(a.date) ? b : a), msgs[0]);
+    const f = (newest.from || [])[0] || {};
+    return { subject: msgs[0].subject || cur.thread.subject, date: newest.date, fromName: f.name, fromAddr: f.address, count };
+  }
+  const t = cur.threads.find((x) => (x.messageIds || []).some((id) => ids.has(id)));
+  return t ? { subject: t.subject, date: t.date, fromName: t.fromName, fromAddr: t.fromAddr, count } : null;
 }
 
+/** Konversationen drucken: groups = [[messageId, …], …] */
+async function printGroups(groups, title) {
+  if (!groups.length) return;
+  const fields = await printOptionsDialog(groups.length, printSample(groups));
+  if (!fields) return;
+  return printMessages(groups, { getBody: (id) => bodyCache.get(id), allowRemote: remoteAllowedFor, title, fields });
+}
+
+/** Ausgewählte Konversationen (in Listenreihenfolge) */
+function selectedGroups() {
+  return cur.threads.filter((t) => cur.selected.has(t.threadId)).map((t) => t.messageIds);
+}
+
+function printSelection() {
+  return printGroups(selectedGroups());
+}
+
+/** Druck-Symbol in der Lesespalte / Strg+P: sind Mails ausgewählt, alle ausgewählten drucken, sonst die geöffnete Konversation */
 function printCurrentThread() {
+  if (selectedGroups().length) return printSelection();
   if (!cur.thread) return;
   printGroups([cur.thread.messages.map((m) => m.id)]);
 }
@@ -1111,9 +1212,9 @@ function onKey(e) {
   // Strg/Cmd+P: geöffnete Konversation bzw. Auswahl sauber drucken statt der ganzen Oberfläche
   if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'p'
     && !document.querySelector('.modal-overlay, .compose.open:not(.minimized)')) {
-    if (cur.selected.size) {
+    if (selectedGroups().length) {
       e.preventDefault();
-      printGroups(cur.threads.filter((t) => cur.selected.has(t.threadId)).map((t) => t.messageIds));
+      printSelection();
     } else if (cur.thread) {
       e.preventDefault();
       printCurrentThread();
