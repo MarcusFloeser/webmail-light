@@ -1245,3 +1245,11 @@ input[type=checkbox].switch:checked::after { transform: translateX(18px); }
 .print-codes { display: flex; flex-wrap: wrap; gap: 4px; }
 .print-codes .chip { cursor: pointer; font-size: 12px; border: 1px solid var(--border); background: transparent; color: inherit; border-radius: 999px; padding: 2px 8px; }
 .print-codes .chip:hover { background: var(--hover, rgba(127,127,127,.12)); }
+
+/* Übersetzen */
+.tr-banner { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: start; }
+.tr-banner .tr-orig { margin-left: auto; }
+.tr-banner:not(.banner-error) { background: var(--accent-soft); }
+.tr-banner .tr-text { flex: 1; min-width: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 4px; }
+.tr-banner select.tr-lang { width: auto; min-width: 0; display: inline-block; font: inherit; padding: 1px 6px; height: auto; border: 1px solid var(--border); border-radius: 6px; background: var(--panel); color: inherit; }
+.tr-banner .tr-subject { flex-basis: 100%; margin-top: 2px; overflow-wrap: anywhere; }

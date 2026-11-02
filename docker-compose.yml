@@ -23,7 +23,7 @@ services:
 
   app:
     build: ./app
-    image: ghcr.io/marcusfloeser/webmail-light:1.4.0
+    image: ghcr.io/marcusfloeser/webmail-light:1.4.5
     restart: unless-stopped
     depends_on:
       db:
@@ -103,8 +103,27 @@ services:
       internal:
         aliases: [webmail-pdf]
 
+  # Optional: Übersetzen auf dem eigenen Server (LibreTranslate). Einschalten mit COMPOSE_PROFILES=translate in .env.
+  # Lädt beim ersten Start die Sprachmodelle aus dem Internet (danach im Volume), übersetzt dann lokal.
+  # Braucht je nach Anzahl Sprachen etwa 1–3 GB RAM.
+  translate:
+    image: libretranslate/libretranslate:latest
+    profiles: [translate]
+    restart: unless-stopped
+    environment:
+      LT_LOAD_ONLY: ${TRANSLATE_LANGUAGES:-de,en,fr,it,es}
+      LT_DISABLE_WEB_UI: "true"
+      LT_UPDATE_MODELS: "true"
+    volumes:
+      - translate-models:/home/libretranslate/.local
+    networks:
+      internal:
+        aliases: [webmail-translate]
+      web: {}   # nur für das Herunterladen der Sprachmodelle
+
 volumes:
   db-data:
+  translate-models:
 
 networks:
   internal:

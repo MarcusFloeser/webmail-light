@@ -8,6 +8,7 @@ import * as compose from './compose.js';
 import * as contactsView from './contacts.js';
 import { printMessages, printOptionsDialog } from './print.js';
 import { mailBackground } from './appearance.js';
+import { translateInfo, translateContent, defaultTarget, rememberTarget, languageName } from './translate.js';
 
 const PAGE = 50;
 
@@ -702,6 +703,7 @@ function messageCard(m, isLast) {
   h('div', { class: 'msg-side' },
     m.hasAttachments ? icon('clip', 14) : null,
     h('time', { title: fullDate(m.date) }, shortDate(m.date)),
+    isOpen ? translateButton(card, m) : null,
     isOpen ? iconButton('reply', 'Antworten', () => replyTo(m, 'reply'), { class: 'tiny' }) : null,
     isOpen ? iconButton('more', 'Mehr', (e) => popupMenu(e, [
       { label: 'Allen antworten', onClick: () => replyTo(m, 'replyAll') },
@@ -738,6 +740,72 @@ function recipientsLine(m) {
   if (m.to && m.to.length) parts.push(h('span', {}, 'an ', list(m.to)));
   if (m.cc && m.cc.length) parts.push(h('span', {}, `${parts.length ? ' · ' : ''}Cc `, list(m.cc)));
   return parts;
+}
+
+// ====================================================================== Übersetzen
+
+/** Knopf „Übersetzen“ – erscheint, sobald ein Übersetzer verfügbar ist (Server oder Browser) */
+function translateButton(card, m) {
+  const btn = iconButton('translate', 'Übersetzen', () => {
+    const body = card.querySelector('.msg-body');
+    const p = bodyCache.get(m.id);
+    // nochmals klicken = zurück zum Original
+    if (body && p && body.querySelector('.tr-banner:not(.banner-error)')) { fillBody(body, m, p); return; }
+    translateMessage(card, m);
+  }, { class: 'tiny tr-btn' });
+  btn.hidden = true;
+  translateInfo().then((i) => { btn.hidden = !(i.server || i.browser); });
+  return btn;
+}
+
+async function translateMessage(card, m, target = defaultTarget()) {
+  const body = card.querySelector('.msg-body');
+  const p = bodyCache.get(m.id);
+  if (!body || !p) return;
+  // aus einer bereits übersetzten Ansicht: zuerst das Original wiederherstellen
+  if (body.querySelector('.tr-banner')) fillBody(body, m, p);
+  const info = await translateInfo();
+  const status = h('span', { class: 'tr-status' }, 'Übersetze …');
+  const banner = h('div', { class: 'banner tr-banner' }, icon('translate', 16), status);
+  body.prepend(banner);
+  try {
+    let doc = null;
+    const frame = body.querySelector('iframe.mail-frame');
+    if (frame) {
+      if (!frame._loaded) await new Promise((r) => frame.addEventListener('load', r, { once: true }));
+      doc = frame.contentDocument;
+    }
+    const r = await translateContent({ target, subject: p.subject, doc, text: frame ? null : p.text, onProgress: (t) => { status.textContent = t; } });
+    if (!banner.isConnected) return;
+    if (r.same) {
+      banner.remove();
+      toast(r.detected ? `Die Nachricht ist bereits auf ${languageName(r.detected)}.` : 'Nichts zu übersetzen.');
+      return;
+    }
+    if (!frame && r.text != null) {
+      const old = body.querySelector('.text-body');
+      if (old) old.replaceWith(textBody(r.text));
+    }
+    if (frame && frame._remeasure) frame._remeasure();
+    rememberTarget(target);
+    const sel = h('select', { class: 'tr-lang', 'aria-label': 'Zielsprache',
+      onChange: (e) => translateMessage(card, m, e.currentTarget.value) },
+    [...new Set([target, ...info.languages])].map((c) => ({ c, n: languageName(c) }))
+      .sort((a, b) => a.n.localeCompare(b.n, 'de'))
+      .map(({ c, n }) => h('option', { value: c, selected: c === target }, n)));
+    const via = { deepl: 'DeepL', libretranslate: 'LibreTranslate', browser: 'im Browser' }[r.provider] || '';
+    clear(banner, icon('translate', 16),
+      h('div', { class: 'tr-text' },
+        h('span', {}, `Übersetzt${r.detected ? ` aus ${languageName(r.detected)}` : ''} nach `), sel,
+        via ? h('span', { class: 'muted' }, `· ${via}`) : null,
+        h('button', { class: 'link-btn tr-orig', type: 'button', onClick: () => fillBody(body, m, p) }, 'Original anzeigen'),
+        r.subject && r.subject !== p.subject ? h('div', { class: 'tr-subject' }, h('strong', {}, 'Betreff: '), r.subject) : null));
+  } catch (err) {
+    if (!banner.isConnected) return;
+    banner.classList.add('banner-error');
+    clear(banner, icon('alert', 16), h('span', {}, `Übersetzen nicht möglich: ${err.message}`),
+      h('button', { class: 'link-btn', type: 'button', onClick: () => fillBody(body, m, p) }, 'Schliessen'));
+  }
 }
 
 /** Klickbare Adresse (Absender/Empfänger) → Menü: Mail schreiben, kopieren, zu Kontakten hinzufügen */
@@ -955,7 +1023,10 @@ a{color:#2557c7}
       }
     } catch { /* ignore */ }
   };
+  // nach Änderungen am Inhalt (z. B. Übersetzung) die Höhe neu bestimmen
+  frame._remeasure = () => { frozen = false; same = 0; steps = 0; lastDelta = 0; resize(); };
   frame.addEventListener('load', () => {
+    frame._loaded = true;
     resize();
     try {
       const d = frame.contentDocument;

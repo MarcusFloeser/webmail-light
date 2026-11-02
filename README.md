@@ -118,6 +118,23 @@ Von jeder gesendeten Mail wird immer eine Kopie gespeichert: neue Mails und Weit
 Unter jedem Konto in der Ordnerleiste und in den Kontoeinstellungen sieht der Benutzer, wie viel Platz sein Postfach belegt („700 MB von 5 GB“), als Balken: grün, ab `QUOTA_WARN_PERCENT` (80 %) orange, ab `QUOTA_FULL_PERCENT` (95 %) rot – mit einem Hinweis, wie man Platz schafft. Die Werte kommen vom Mailserver (IMAP QUOTA, bei mailcow vorhanden), werden alle 15 Minuten und nach „Papierkorb leeren“ aktualisiert und lassen sich in den Kontoeinstellungen sofort neu abfragen. Der Admin sieht dieselben Balken in der Benutzerübersicht.
 
 
+
+## Übersetzen
+
+In jeder geöffneten Mail gibt es den Knopf **Übersetzen** (Symbol „文A“). Die Mail wird an Ort und Stelle übersetzt – Formatierung, Links und Bilder bleiben erhalten, der Betreff wird mit übersetzt. Ein Hinweis oberhalb zeigt die erkannte Ausgangssprache, die Zielsprache (umschaltbar, wird gemerkt) und „Original anzeigen“; ein zweiter Klick auf den Knopf zeigt ebenfalls wieder das Original.
+
+An den Übersetzer gehen nur die Textabschnitte – ohne Bilder, Link-Adressen, Styles und Kopfzeilen. Bereits übersetzte Abschnitte merkt sich der Server (spart Kontingent beim erneuten Öffnen).
+
+Wer übersetzt (der erste passende Anbieter):
+
+| Anbieter | Einrichtung | Daten | Bemerkung |
+|---|---|---|---|
+| **DeepL** | `DEEPL_API_KEY` in `.env` | gehen an DeepL | beste Qualität; Admins sehen das verbrauchte Kontingent unter `GET /api/translate/info` |
+| **LibreTranslate** (eigener Container) | `COMPOSE_PROFILES=translate` in `.env`, dann `docker compose up -d` | bleiben auf dem Server | unbegrenzt und kostenlos, Qualität etwas schwächer; lädt beim ersten Start die Sprachmodelle (`TRANSLATE_LANGUAGES`, Standard `de,en,fr,it,es`), braucht 1–3 GB RAM |
+| **Browser** | nichts | bleiben auf dem Gerät | Chrome/Edge mit eingebautem Übersetzer (lädt Sprachpakete beim ersten Mal); in anderen Browsern fehlt dann der Knopf |
+
+Ein eigener LibreTranslate-Server lässt sich mit `TRANSLATE_URL` (und ggf. `TRANSLATE_API_KEY`) angeben, `TRANSLATE_URL=off` schaltet den Server-Weg ab. Mails über `TRANSLATE_MAX_CHARS` Zeichen (Standard 50 000) werden nicht übersetzt. Beim Start steht im Log, welcher Anbieter verwendet wird (`docker compose logs app | grep Übersetzen`).
+
 ## PDF-Export
 
 Im Druckdialog (Drucksymbol, Auswahl-Leiste oder Strg+P) lässt sich wählen:
@@ -213,6 +230,10 @@ Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
 | `AUTH_ADMINS` | – | Kommagetrennte Logins mit Admin-Rechten |
 | `AUTH_CREATE_ACCOUNT` | true | Postfach beim ersten Login als Konto einrichten |
 | `LOGIN_MAX_PER_ACCOUNT` / `LOGIN_MAX_PER_IP` / `LOGIN_WHITELIST` | 5 / 20 / – | Schutz vor Passwort-Raten (siehe oben) |
+| `DEEPL_API_KEY` | – | Übersetzen mit DeepL (hat Vorrang vor LibreTranslate) |
+| `TRANSLATE_URL` | `http://webmail-translate:5000` | LibreTranslate-Server; `off` = aus (dann nur Browser) |
+| `TRANSLATE_LANGUAGES` | `de,en,fr,it,es` | Sprachen des LibreTranslate-Containers |
+| `TRANSLATE_MAX_CHARS` | 50000 | Höchstlänge einer Mail zum Übersetzen |
 | `PDF_SERVICE_URL` | `http://webmail-pdf:3000` | PDF-Dienst (Gotenberg) für „jede Mail als eigene PDF-Datei“; leer/nicht gesetzt = Container `webmail-pdf` verwenden, wenn er erreichbar ist; `off` = abgeschaltet, dann Druckdialog je Mail |
 | `QUOTA_WARN_PERCENT` / `QUOTA_FULL_PERCENT` | 80 / 95 | Speicherplatz-Balken: ab diesem Füllstand orange bzw. rot (Ordnerleiste, Kontoeinstellungen, Benutzerübersicht) |
 | `AUTH_DAV_URL` / `AUTH_DAV_NAME` | – / Kalender & Kontakte | CalDAV/CardDAV-Server, der beim IMAP-Login mit denselben Zugangsdaten eingebunden wird |

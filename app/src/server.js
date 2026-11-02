@@ -62,6 +62,7 @@ async function main() {
   app.use('/api', auth.requireAuth, require('./admin-domains').router());
   app.use('/api', auth.requireAuth, require('./sieve/routes').router());
   app.use('/api', auth.requireAuth, require('./pdf').router());
+  app.use('/api', auth.requireAuth, require('./translate').router());
   app.use('/api', (req, res) => res.status(404).json({ error: 'Unbekannter Endpunkt' }));
 
   // Oberfläche: versioniert unter /v/<kennung>/ (dauerhaft cachebar), index.html immer frisch
@@ -109,6 +110,11 @@ async function main() {
   hub.attach(server, auth.userFromRequest);
   server.listen(config.port, () => {
     console.log(`[http] Webmail läuft auf Port ${config.port}`);
+    setTimeout(() => require('./translate').info({ fresh: true }).then((st) => {
+      if (st.server) console.log(`[config] Übersetzen über ${st.provider === 'deepl' ? 'DeepL' : `LibreTranslate (${config.translateUrl})`}, ${st.languages.length} Sprachen`);
+      else if (st.provider) console.warn(`[config] Übersetzungsdienst ${st.provider}: ${st.error}${config.deeplApiKey ? '' : ' (DEEPL_API_KEY ist im Container nicht gesetzt)'} – übersetzt wird dann nur im Browser (Chrome/Edge)`);
+      else console.log('[config] Kein Übersetzungsdienst – übersetzt wird nur im Browser (Chrome/Edge)');
+    }).catch(() => {}), 9000).unref();
     // PDF-Dienst prüfen (startet evtl. gleichzeitig mit der Webmail – darum kurz warten)
     setTimeout(() => require('./pdf').status(config.pdfServiceUrl, { fresh: true }).then((st) => {
       if (st.pdf) console.log(`[config] PDF-Dienst erreichbar: ${st.detail} (jede Mail als eigene PDF-Datei)`);
