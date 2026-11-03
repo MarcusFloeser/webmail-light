@@ -327,6 +327,10 @@ class AccountWorker {
 
     let lock = await c.getMailboxLock(path);
     try {
+      // Ist der Ordner auf dieser Verbindung schon ausgewählt (z. B. zweite Mail kurz nach der ersten),
+      // kennt der Server-„Blick“ neue Nachrichten erst nach einem Abgleich: NOOP holt sie herein,
+      // sonst liefert SEARCH die gerade eingetroffene Mail noch nicht.
+      try { await c.noop(); } catch (_) { /* ignore */ }
       const mb = c.mailbox;
       const uidValidity = mb.uidValidity != null ? String(mb.uidValidity) : null;
       if (folder.uidvalidity != null && uidValidity && String(folder.uidvalidity) !== uidValidity) {
@@ -392,11 +396,13 @@ class AccountWorker {
       }
 
       const unseenUids = mb.exists ? ((await c.search({ seen: false }, { uid: true })) || []) : [];
+      const maxUid = serverUids.length ? serverUids[serverUids.length - 1] : 0;
       mbInfo = {
         uidValidity,
-        uidNext: mb.uidNext || null,
+        // UIDNEXT der Auswahl kann veraltet sein – nie kleiner als die höchste bekannte UID + 1
+        uidNext: Math.max(Number(mb.uidNext) || 0, maxUid + 1) || null,
         highestModseq: mb.highestModseq ? String(mb.highestModseq) : null,
-        total: mb.exists || 0,
+        total: Math.max(mb.exists || 0, serverUids.length),
         unseen: unseenUids.length,
       };
     } finally {
@@ -436,6 +442,9 @@ class AccountWorker {
     if (changed || folder.unseen !== mbInfo.unseen || folder.total !== mbInfo.total) {
       this.emitFolder(folder.id, mbInfo, changed, newForNotify);
     }
+    // Sicherheitsnetz: meldet die IDLE-Verbindung mehr Nachrichten als eben gesehen, gleich nochmals abgleichen
+    const idleMb = isInbox && this.idle && this.idle.mailbox;
+    if (idleMb && Number(idleMb.exists) > mbInfo.total && !this.stopped) this.scheduleFolderSync(path, 1500);
   }
 
   /** Eingangszeit für Mails ohne received_at vom Server holen (je Durchlauf höchstens 5000). → true bei Änderungen */

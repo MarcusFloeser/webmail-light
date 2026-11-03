@@ -23,7 +23,7 @@ services:
 
   app:
     build: ./app
-    image: ghcr.io/marcusfloeser/webmail-light:1.4.5
+    image: ghcr.io/marcusfloeser/webmail-light:1.4.6
     restart: unless-stopped
     depends_on:
       db:
@@ -111,7 +111,7 @@ services:
     profiles: [translate]
     restart: unless-stopped
     environment:
-      LT_LOAD_ONLY: ${TRANSLATE_LANGUAGES:-de,en,fr,it,es}
+      LT_LOAD_ONLY: ${TRANSLATE_LANGUAGES:-de,en,fr}
       LT_DISABLE_WEB_UI: "true"
       LT_UPDATE_MODELS: "true"
     volumes:
