@@ -24,26 +24,69 @@ function timeOut(t) {
 
 const WEEKDAYS = ['MO', 'TU', 'WE', 'TH', 'FR', 'SA', 'SU'];
 
+/**
+ * Wiederholungsregel lesen. Zusätzlich zu freq/interval/count/until:
+ *  byday   – Wochentage bei WEEKLY (['MO', 'WE'])
+ *  ordinal + weekday – „am 2. Mittwoch“ (2, 'WE'); ordinal -1 = „am letzten …“  (MONTHLY/YEARLY)
+ *  monthday – „am 15.“ bzw. -1 = „am letzten Tag“ (MONTHLY/YEARLY)
+ *  month   – Monat bei YEARLY (1–12)
+ *  simple  – mit der Webmail vollständig bearbeitbar (sonst bleibt die Regel beim Speichern unverändert)
+ */
 function rruleInfo(vevent) {
   const p = vevent.getFirstProperty('rrule');
   if (!p) return null;
   const r = p.getFirstValue();
   if (!r) return null;
-  const byday = (r.parts && r.parts.BYDAY) || [];
-  // „einfach“ = mit der Webmail vollständig bearbeitbar (sonst bleibt die Regel beim Speichern unverändert)
-  const otherParts = Object.keys(r.parts || {}).filter((k) => k !== 'BYDAY' && (r.parts[k] || []).length);
-  const simple = !otherParts.length && byday.every((d) => WEEKDAYS.includes(String(d).toUpperCase())) && (!byday.length || r.freq === 'WEEKLY');
-  return {
+  const parts = r.parts || {};
+  const list = (k) => (parts[k] || []).filter((x) => x !== null && x !== undefined && x !== '');
+  const byday = list('BYDAY').map((d) => String(d).toUpperCase());
+  const bymonthday = list('BYMONTHDAY').map(Number);
+  const bymonth = list('BYMONTH').map(Number);
+  const bysetpos = list('BYSETPOS').map(Number);
+  const others = Object.keys(parts).filter((k) => !['BYDAY', 'BYMONTHDAY', 'BYMONTH', 'BYSETPOS', 'WKST'].includes(k) && list(k).length);
+  const out = {
     freq: r.freq,
     interval: r.interval || 1,
-    byday: byday.map((d) => String(d).toUpperCase()),
+    byday: [],
     count: r.count || null,
     until: r.until ? r.until.toString().slice(0, 10) : null,
-    simple,
+    ordinal: null, weekday: null, monthday: null, month: null,
+    simple: false,
   };
+  const plainDays = byday.every((d) => WEEKDAYS.includes(d));
+  // „2WE“ oder „WE“ + BYSETPOS=2 (Outlook)
+  let ord = null;
+  if (byday.length === 1) {
+    const m = byday[0].match(/^([+-]?\d)?(MO|TU|WE|TH|FR|SA|SU)$/);
+    if (m && m[1] && !bysetpos.length) ord = { ordinal: Number(m[1]), weekday: m[2] };
+    else if (m && !m[1] && bysetpos.length === 1) ord = { ordinal: bysetpos[0], weekday: m[2] };
+  }
+  const okOrd = ord && ord.ordinal !== 0 && ord.ordinal >= -1 && ord.ordinal <= 5;
+  const okDay = bymonthday.length === 1 && (bymonthday[0] === -1 || (bymonthday[0] >= 1 && bymonthday[0] <= 31));
+  if (!others.length) {
+    if (r.freq === 'DAILY') out.simple = !byday.length && !bymonthday.length && !bymonth.length && !bysetpos.length;
+    else if (r.freq === 'WEEKLY') {
+      out.simple = plainDays && !bymonthday.length && !bymonth.length && !bysetpos.length;
+      out.byday = plainDays ? byday : [];
+    } else if (r.freq === 'MONTHLY' && !bymonth.length) {
+      if (!byday.length && !bymonthday.length && !bysetpos.length) out.simple = true;
+      else if (okOrd && !bymonthday.length) { Object.assign(out, ord); out.simple = true; } else if (okDay && !byday.length && !bysetpos.length) { out.monthday = bymonthday[0]; out.simple = true; }
+    } else if (r.freq === 'YEARLY') {
+      if (!byday.length && !bymonthday.length && !bymonth.length && !bysetpos.length) out.simple = true;
+      else if (bymonth.length === 1) {
+        out.month = bymonth[0];
+        if (okOrd && !bymonthday.length) { Object.assign(out, ord); out.simple = true; } else if (okDay && !byday.length && !bysetpos.length) { out.monthday = bymonthday[0]; out.simple = true; }
+      }
+    }
+  }
+  if (!out.simple && r.freq === 'WEEKLY' && plainDays) out.byday = byday;
+  return out;
 }
 
-/** Wiederholungsregel aus den Formularangaben. rule: 'WEEKLY' oder { freq, interval, byday[], count, until } */
+/**
+ * Wiederholungsregel aus den Formularangaben.
+ * rule: 'WEEKLY' oder { freq, interval, byday[], count, until, ordinal, weekday, monthday, month }
+ */
 function makeRecur(rule, dtstart) {
   const r = typeof rule === 'string' ? { freq: rule } : rule;
   const freq = String(r.freq || '').toUpperCase();
@@ -53,6 +96,17 @@ function makeRecur(rule, dtstart) {
   if (interval > 1) data.interval = Math.min(interval, 999);
   const byday = (Array.isArray(r.byday) ? r.byday : []).map((d) => String(d).toUpperCase()).filter((d) => WEEKDAYS.includes(d));
   if (freq === 'WEEKLY' && byday.length) data.byday = WEEKDAYS.filter((d) => byday.includes(d));
+  if (freq === 'MONTHLY' || freq === 'YEARLY') {
+    const ordinal = parseInt(r.ordinal, 10);
+    const weekday = String(r.weekday || '').toUpperCase();
+    const monthday = parseInt(r.monthday, 10);
+    const month = parseInt(r.month, 10);
+    if (freq === 'YEARLY' && month >= 1 && month <= 12) data.bymonth = [month];
+    if (ordinal && ordinal >= -1 && ordinal <= 5 && WEEKDAYS.includes(weekday)) data.byday = [`${ordinal}${weekday}`];
+    else if (monthday === -1 || (monthday >= 1 && monthday <= 31)) data.bymonthday = [monthday];
+    // Jährlich ohne Tag: Monat allein ergibt keinen Sinn → Tag vom Beginn
+    if (data.bymonth && !data.byday && !data.bymonthday && dtstart) data.bymonthday = [dtstart.day];
+  }
   const count = parseInt(r.count, 10);
   if (count > 0) data.count = Math.min(count, 5000);
   else if (r.until && /^\d{4}-\d{2}-\d{2}/.test(r.until)) {
@@ -83,6 +137,58 @@ function attendeesOf(vevent) {
     partstat: String(p.getParameter('partstat') || 'NEEDS-ACTION').toUpperCase(),
     role: String(p.getParameter('role') || 'REQ-PARTICIPANT').toUpperCase(),
   })).filter((a) => a.email);
+}
+
+/**
+ * Organisator und Teilnehmer setzen (eigene Einladung).
+ * attendees: [{ email, name }] – ohne den Organisator. Bisherige Antworten (PARTSTAT) bleiben erhalten,
+ * ausser reset=true (wesentliche Änderung: Zeit, Ort, Wiederholung → alle neu um Antwort bitten).
+ * Keine Teilnehmer → normaler Termin ohne Organisator.
+ * SCHEDULE-AGENT=CLIENT: die Webmail verschickt die Einladungen selbst, der CalDAV-Server (SOGo, Nextcloud) nicht.
+ */
+function setParticipants(vevent, organizer, attendees, { reset = false } = {}) {
+  const old = new Map(vevent.getAllProperties('attendee').map((p) => [mailto(p.getFirstValue()), p]));
+  const org = organizer ? mailto(organizer.email) : '';
+  const seen = new Set([org]);
+  const list = [];
+  for (const a of attendees || []) {
+    const email = mailto(a && a.email);
+    if (!email || seen.has(email) || !/^[^\s@]+@[^\s@]+$/.test(email)) continue;
+    seen.add(email);
+    list.push({ email, name: String((a && a.name) || '').trim() });
+  }
+  vevent.removeAllProperties('attendee');
+  vevent.removeAllProperties('organizer');
+  if (!list.length || !org) return;
+  const op = new ICAL.Property('organizer');
+  op.setValue(`mailto:${org}`);
+  if (organizer.name) op.setParameter('cn', organizer.name);
+  op.setParameter('schedule-agent', 'CLIENT');
+  vevent.addProperty(op);
+  const add = (email, name, partstat, role, rsvp) => {
+    const p = new ICAL.Property('attendee');
+    p.setValue(`mailto:${email}`);
+    if (name) p.setParameter('cn', name);
+    p.setParameter('role', role);
+    p.setParameter('partstat', partstat);
+    p.setParameter('cutype', 'INDIVIDUAL');
+    if (rsvp) p.setParameter('rsvp', 'TRUE');
+    p.setParameter('schedule-agent', 'CLIENT');
+    vevent.addProperty(p);
+  };
+  add(org, organizer.name, 'ACCEPTED', 'CHAIR', false);
+  for (const a of list) {
+    const prev = old.get(a.email);
+    const ps = !reset && prev ? String(prev.getParameter('partstat') || 'NEEDS-ACTION').toUpperCase() : 'NEEDS-ACTION';
+    const role = prev ? String(prev.getParameter('role') || 'REQ-PARTICIPANT').toUpperCase() : 'REQ-PARTICIPANT';
+    add(a.email, a.name || (prev && prev.getParameter('cn')) || '', ps, role === 'CHAIR' ? 'REQ-PARTICIPANT' : role, ps === 'NEEDS-ACTION');
+  }
+}
+
+/** Merkmale, deren Änderung eine erneute Zusage erfordert */
+function significant(vevent) {
+  const g = (n) => { const v = vevent.getFirstPropertyValue(n); return v ? v.toString() : ''; };
+  return [g('dtstart'), g('dtend'), g('duration'), g('rrule'), g('location'), vevent.getAllProperties('exdate').map((p) => p.getFirstValue().toString()).join(',')].join('|');
 }
 
 /**
@@ -343,8 +449,10 @@ function buildEvent(fields, existing) {
       ex.updatePropertyWithValue('sequence', parseInt(master.getFirstPropertyValue('sequence') || '0', 10));
       comp.addSubcomponent(ex);
     }
+    const sigBefore = significant(ex);
     applyText(ex, fields);
     if (fields.start !== undefined) { const { s, e } = formTimes(fields); setTimes(ex, s, e); }
+    if (fields.attendees !== undefined) setParticipants(ex, fields.organizer, fields.attendees, { reset: significant(ex) !== sigBefore });
     applyReminder(ex, fields);
     touch(ex);
     bumpSequence(ex);
@@ -352,6 +460,7 @@ function buildEvent(fields, existing) {
   }
 
   // ---- ganze Serie bzw. Einzeltermin
+  const sigBefore = existing ? significant(master) : null;
   applyText(master, fields);
   touch(master);
 
@@ -399,6 +508,14 @@ function buildEvent(fields, existing) {
       }
     }
   }
+  if (fields.attendees !== undefined) {
+    const reset = sigBefore !== null && significant(master) !== sigBefore;
+    setParticipants(master, fields.organizer, fields.attendees, { reset });
+    // Ausnahmen einer Serie: gleiche Teilnehmerliste (eigene Antworten je Vorkommen bleiben)
+    for (const v of comp.getAllSubcomponents('vevent')) {
+      if (v !== master && v.hasProperty('recurrence-id')) setParticipants(v, fields.organizer, fields.attendees, { reset });
+    }
+  }
   applyReminder(master, fields);
   bumpSequence(master);
   return { uid, data: comp.toString() };
@@ -426,6 +543,59 @@ function stripScheduleParams(vevent) {
       for (const k of ['schedule-agent', 'schedule-status', 'schedule-force-send']) p.removeParameter(k);
     }
   }
+}
+
+/**
+ * iTIP-Nachricht des Organisators (RFC 5546): REQUEST (Einladung/Aktualisierung) oder CANCEL (Absage).
+ * opts.recurrenceId: nur dieses Vorkommen (Ausnahme bzw. – bei CANCEL – ein gelöschtes Vorkommen)
+ * opts.only: nur diese Teilnehmer aufführen (z. B. Absage an entfernte Teilnehmer)
+ */
+function itipMessage(data, method, opts = {}) {
+  const comp = parseCal(data);
+  const master = masterOf(comp);
+  const out = new ICAL.Component(['vcalendar', [], []]);
+  out.updatePropertyWithValue('prodid', '-//Webmail//DE');
+  out.updatePropertyWithValue('version', '2.0');
+  out.updatePropertyWithValue('method', method);
+  for (const tz of comp.getAllSubcomponents('vtimezone')) out.addSubcomponent(new ICAL.Component(tz.toJSON()));
+  let vevents = comp.getAllSubcomponents('vevent');
+  let rid = null;
+  if (opts.recurrenceId && master) {
+    rid = ridTime(master, opts.recurrenceId);
+    const ex = findException(comp, master, rid);
+    if (ex) vevents = [ex];
+    else {
+      // gelöschtes Vorkommen (EXDATE): Absage nur für dieses Datum
+      const v = new ICAL.Component('vevent');
+      for (const name of ['uid', 'summary', 'location', 'organizer', 'attendee', 'sequence']) {
+        for (const p of master.getAllProperties(name)) v.addProperty(ICAL.Property.fromString(p.toICALString()));
+      }
+      setTimeProp(v, 'recurrence-id', rid);
+      const st = master.getFirstPropertyValue('dtstart');
+      const en = master.getFirstPropertyValue('dtend');
+      const dur = en && st ? en.subtractDate(st) : ICAL.Duration.fromSeconds(st && st.isDate ? 86400 : 3600);
+      const e = rid.clone(); e.addDuration(dur);
+      setTimes(v, rid.clone(), e);
+      vevents = [v];
+    }
+  }
+  const only = opts.only ? new Set(opts.only.map(mailto)) : null;
+  const orgMail = master && master.getFirstProperty('organizer') ? mailto(master.getFirstPropertyValue('organizer')) : '';
+  for (const src of vevents) {
+    const v = new ICAL.Component(src.toJSON());
+    for (const a of v.getAllSubcomponents('valarm')) v.removeSubcomponent(a);
+    for (const p of [...v.getAllProperties()]) if (/^x-webmail/i.test(p.name)) v.removeProperty(p);
+    if (only) for (const p of v.getAllProperties('attendee')) { const m = mailto(p.getFirstValue()); if (!only.has(m) && m !== orgMail) v.removeProperty(p); }
+    if (method === 'CANCEL') {
+      v.updatePropertyWithValue('status', 'CANCELLED');
+      // Absage braucht eine höhere SEQUENCE als die letzte Einladung
+      if (opts.bump) bumpSequence(v);
+    }
+    v.updatePropertyWithValue('dtstamp', nowUtc());
+    stripScheduleParams(v);
+    out.addSubcomponent(v);
+  }
+  return { method, data: out.toString(), summary: (vevents[0] && vevents[0].getFirstPropertyValue('summary')) || '' };
 }
 
 /** iTIP-Antwort (REPLY) eines Teilnehmers erzeugen. */
@@ -598,5 +768,5 @@ function prepareImport(data) {
 
 module.exports = {
   expand, buildEvent, deleteOccurrence, prepareImport,
-  itipReply, parseInvitation, mergeOccurrence, applyReply, setMyPartstat,
+  itipReply, parseInvitation, mergeOccurrence, applyReply, setMyPartstat, itipMessage, setParticipants,
 };

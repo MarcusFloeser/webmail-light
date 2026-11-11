@@ -2,6 +2,7 @@ import { h, clear, icon, iconButton, toast, modal, confirmDialog, choiceDialog, 
 import { get, post, put, del, patch } from './api.js';
 import * as reminders from './reminders.js';
 import { notify } from './state.js';
+import { recipientInput, parseAddresses } from './compose.js';
 
 const WEEKDAYS = ['Mo', 'Di', 'Mi', 'Do', 'Fr', 'Sa', 'So'];
 const monthFmt = new Intl.DateTimeFormat('de-CH', { month: 'long', year: 'numeric' });
@@ -305,7 +306,61 @@ function partstatBadge(ps) {
 }
 
 /** Wiederholung: Häufigkeit, Intervall, Wochentage, Ende */
-function recurrenceEditor(rule, startDay) {
+const WD_LONG = { MO: 'Montag', TU: 'Dienstag', WE: 'Mittwoch', TH: 'Donnerstag', FR: 'Freitag', SA: 'Samstag', SU: 'Sonntag' };
+const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+const ORDINALS = [[1, '1.'], [2, '2.'], [3, '3.'], [4, '4.'], [5, '5.'], [-1, 'letzten']];
+
+/** n-ter Wochentag eines Monats (ordinal -1 = letzter) → Date oder null (z. B. kein 5. Montag) */
+export function nthWeekday(year, month, ordinal, weekday) {
+  const wd = JS_DAY.indexOf(weekday);
+  if (wd < 0) return null;
+  if (ordinal === -1) {
+    const last = new Date(year, month + 1, 0);
+    return new Date(year, month, last.getDate() - ((last.getDay() - wd + 7) % 7));
+  }
+  const first = new Date(year, month, 1);
+  const day = 1 + ((wd - first.getDay() + 7) % 7) + (ordinal - 1) * 7;
+  const d = new Date(year, month, day);
+  return d.getMonth() === month ? d : null;
+}
+
+/** Erstes Datum ab start, das zur Regel „ordinal weekday (im Monat month)“ passt */
+export function firstMatch(start, ordinal, weekday, month = null) {
+  const s0 = new Date(start.getFullYear(), start.getMonth(), start.getDate());
+  for (let i = 0; i < 400; i++) {
+    const y = start.getFullYear() + Math.floor((start.getMonth() + i) / 12);
+    const m = (start.getMonth() + i) % 12;
+    if (month && m !== month - 1) continue;
+    const d = nthWeekday(y, m, ordinal, weekday);
+    if (d && d >= s0) return d;
+  }
+  return null;
+}
+
+/** Vorgaben „n-ter Wochentag“ aus einem Datum: 11.11.2026 → 2. Mittwoch; ab dem 29. → letzter */
+function ordinalOf(d) {
+  const n = Math.ceil(d.getDate() / 7);
+  const last = d.getDate() + 7 > new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
+  return { ordinal: n >= 5 || (n === 4 && last) ? -1 : n, weekday: JS_DAY[d.getDay()] };
+}
+
+/** Lesbare Beschreibung einer Regel (für Hinweise) */
+export function describeRule(r) {
+  if (!r || !r.freq) return '';
+  const n = r.interval || 1;
+  const unit = RR_UNIT[r.freq] ? RR_UNIT[r.freq][n === 1 ? 0 : 1] : '';
+  let t = n > 1 ? `Alle ${n} ${unit}` : ({ DAILY: 'Täglich', WEEKLY: 'Wöchentlich', MONTHLY: 'Monatlich', YEARLY: 'Jährlich' }[r.freq] || r.freq);
+  if (r.freq === 'WEEKLY' && r.byday && r.byday.length) t += ` am ${r.byday.map((d) => WD_LONG[d]).join(', ')}`;
+  const ordTxt = r.ordinal ? `${r.ordinal === -1 ? 'letzten' : `${r.ordinal}.`} ${WD_LONG[r.weekday] || r.weekday}` : null;
+  const dayTxt = r.monthday ? (r.monthday === -1 ? 'letzten Tag' : `${r.monthday}.`) : null;
+  if (r.freq === 'MONTHLY' && (ordTxt || dayTxt)) t += ` am ${ordTxt || dayTxt}`;
+  if (r.freq === 'YEARLY' && r.month && (ordTxt || dayTxt)) t += ordTxt ? ` am ${ordTxt} im ${MONTHS[r.month - 1]}` : ` am ${dayTxt === 'letzten Tag' ? 'letzten Tag im' : dayTxt} ${MONTHS[r.month - 1]}`;
+  if (r.count) t += `, ${r.count} Mal`;
+  else if (r.until) t += `, bis ${r.until.split('-').reverse().join('.')}`;
+  return t;
+}
+
+function recurrenceEditor(rule, startDay, { onAdjustStart } = {}) {
   const r = rule || {};
   const freq = h('select', { 'aria-label': 'Wiederholung' },
     [['', 'Keine Wiederholung'], ['DAILY', 'Täglich'], ['WEEKLY', 'Wöchentlich'], ['MONTHLY', 'Monatlich'], ['YEARLY', 'Jährlich']]
@@ -318,6 +373,33 @@ function recurrenceEditor(rule, startDay) {
       onClick: (e) => { const b = e.currentTarget; b.classList.toggle('on'); b.setAttribute('aria-pressed', String(b.classList.contains('on'))); } }, label);
   });
   const days = h('div', { class: 'rr-days', role: 'group', 'aria-label': 'Wochentage' }, dayBtns);
+
+  // ---- Monatlich/Jährlich: „am 15.“ oder „am 2. Mittwoch“ (jährlich zusätzlich: im Monat …)
+  const st0 = startDay();
+  const def = ordinalOf(st0);
+  const initMode = r.ordinal ? 'nth' : 'day';
+  const modeDay = h('input', { type: 'radio', name: 'rr-mode', value: 'day', checked: initMode === 'day', 'aria-label': 'Am Tag' });
+  const modeNth = h('input', { type: 'radio', name: 'rr-mode', value: 'nth', checked: initMode === 'nth', 'aria-label': 'Am Wochentag' });
+  const mday = h('select', { class: 'rr-mday', 'aria-label': 'Tag im Monat' },
+    [...Array(31)].map((_, i) => h('option', { value: String(i + 1) }, `${i + 1}.`)), h('option', { value: '-1' }, 'letzten Tag'));
+  mday.value = String(r.monthday || st0.getDate());
+  const ord = h('select', { class: 'rr-ord', 'aria-label': 'Welcher' }, ORDINALS.map(([v, l]) => h('option', { value: String(v) }, l)));
+  ord.value = String(r.ordinal || def.ordinal);
+  const wday = h('select', { class: 'rr-wday', 'aria-label': 'Wochentag' }, RR_DAYS.map(([c]) => h('option', { value: c }, WD_LONG[c])));
+  wday.value = r.weekday || def.weekday;
+  const monthSel = () => h('select', { class: 'rr-month', 'aria-label': 'Monat' }, MONTHS.map((m, i) => h('option', { value: String(i + 1) }, m)));
+  const month1 = monthSel();
+  const month2 = monthSel();
+  month1.value = month2.value = String(r.month || st0.getMonth() + 1);
+  month1.addEventListener('change', () => { month2.value = month1.value; });
+  month2.addEventListener('change', () => { month1.value = month2.value; });
+  const inMonth1 = h('span', { class: 'rr-unit rr-y' }, '');
+  const inMonth2 = h('span', { class: 'rr-unit rr-y' }, 'im');
+  const monthly = h('div', { class: 'rr-monthly', role: 'radiogroup', 'aria-label': 'Tag der Wiederholung' },
+    h('label', { class: 'rr-line' }, modeDay, h('span', {}, 'am'), mday, inMonth1, month1),
+    h('label', { class: 'rr-line' }, modeNth, h('span', {}, 'am'), ord, wday, inMonth2, month2));
+  const adjustNote = h('p', { class: 'hint rr-adjust', hidden: true });
+
   const endMode = h('select', { 'aria-label': 'Ende der Wiederholung' },
     h('option', { value: 'never', selected: !r.count && !r.until }, 'Endet nie'),
     h('option', { value: 'until', selected: !!r.until }, 'Endet am'),
@@ -325,17 +407,71 @@ function recurrenceEditor(rule, startDay) {
   const until = dateInput(r.until || '', { label: 'Ende der Wiederholung' });
   const count = h('input', { type: 'number', min: '1', max: '5000', value: String(r.count || 10), class: 'rr-int', 'aria-label': 'Anzahl Termine' });
   const countLbl = h('span', { class: 'rr-unit' }, 'Terminen');
+  const summary = h('p', { class: 'hint rr-summary' });
   const more = h('div', { class: 'rr-more' },
     h('div', { class: 'rr-line' }, h('span', {}, 'Alle'), interval, unit),
     days,
-    h('div', { class: 'rr-line' }, endMode, until, count, countLbl));
+    monthly,
+    adjustNote,
+    h('div', { class: 'rr-line' }, endMode, until, count, countLbl),
+    summary);
   const complexNote = r.freq && r.simple === false
-    ? h('p', { class: 'hint' }, 'Diese Serie hat eine erweiterte Regel aus einem anderen Kalenderprogramm. Sie bleibt erhalten, solange du die Wiederholung hier nicht ändern.') : null;
+    ? h('p', { class: 'hint' }, 'Diese Serie hat eine erweiterte Regel aus einem anderen Kalenderprogramm. Sie bleibt erhalten, solange du die Wiederholung hier nicht änderst.') : null;
   let touched = false;
+  // Beginn, wie ihn der Benutzer gesetzt hat – automatische Anpassungen rechnen immer von hier aus
+  let base = null;
+  const from = () => base || startDay();
+
+  const api = {
+    el: h('div', { class: 'rr' }, freq, more, complexNote),
+    get changed() { return touched; },
+    value() {
+      if (!freq.value) return null;
+      const f = freq.value;
+      const out = { freq: f, interval: Math.max(1, parseInt(interval.value, 10) || 1) };
+      if (f === 'WEEKLY') out.byday = dayBtns.filter((b) => b.classList.contains('on')).map((b) => b.dataset.day);
+      if (f === 'MONTHLY' || f === 'YEARLY') {
+        const st = startDay();
+        const month = Number(month1.value);
+        if (modeNth.checked) {
+          out.ordinal = Number(ord.value);
+          out.weekday = wday.value;
+          if (f === 'YEARLY') out.month = month;
+        } else {
+          const md = Number(mday.value);
+          // gleicher Tag (und Monat) wie der Beginn: keine feste Angabe – die Serie folgt dann dem Beginn
+          const sameAsStart = md === st.getDate() && (f === 'MONTHLY' || month === st.getMonth() + 1);
+          if (!sameAsStart) { out.monthday = md; if (f === 'YEARLY') out.month = month; }
+        }
+      }
+      if (endMode.value === 'count') out.count = Math.max(1, parseInt(count.value, 10) || 1);
+      if (endMode.value === 'until' && until.value) out.until = until.value;
+      return out;
+    },
+    /** Passt der Beginn nicht zu „n-ter Wochentag“, auf das erste passende Datum verschieben → neues Datum oder null */
+    alignStart() {
+      const f = freq.value;
+      if (!(f === 'MONTHLY' || f === 'YEARLY') || !modeNth.checked) return null;
+      const target = firstMatch(from(), Number(ord.value), wday.value, f === 'YEARLY' ? Number(month1.value) : null);
+      const st = startDay();
+      if (!target || target.getTime() === new Date(st.getFullYear(), st.getMonth(), st.getDate()).getTime()) return null;
+      return target;
+    },
+    validate() {
+      if (freq.value && endMode.value === 'until' && (!until.value || !until.isValid())) return 'Bitte ein gültiges Enddatum für die Wiederholung angeben';
+      if ((freq.value === 'MONTHLY' || freq.value === 'YEARLY') && modeNth.checked && !firstMatch(from(), Number(ord.value), wday.value, freq.value === 'YEARLY' ? Number(month1.value) : null)) {
+        return 'Diesen Wochentag gibt es in keinem passenden Monat';
+      }
+      return null;
+    },
+  };
+
   const sync = () => {
     const f = freq.value;
     more.hidden = !f;
     days.hidden = f !== 'WEEKLY';
+    monthly.hidden = !(f === 'MONTHLY' || f === 'YEARLY');
+    for (const x of [month1, month2, inMonth2]) x.hidden = f !== 'YEARLY';
     const n = Math.max(1, parseInt(interval.value, 10) || 1);
     unit.textContent = f ? RR_UNIT[f][n === 1 ? 0 : 1] : '';
     until.hidden = endMode.value !== 'until';
@@ -346,30 +482,42 @@ function recurrenceEditor(rule, startDay) {
       const b = dayBtns.find((x) => x.dataset.day === JS_DAY[d.getDay()]);
       if (b) { b.classList.add('on'); b.setAttribute('aria-pressed', 'true'); }
     }
+    mday.disabled = !modeDay.checked;
+    for (const x of [ord, wday, month2]) x.disabled = !modeNth.checked;
+    month1.disabled = !modeDay.checked;
+    summary.textContent = f ? describeRule(api.value()) || '' : '';
   };
-  for (const x of [freq, interval, endMode, count]) {
-    x.addEventListener('change', () => { touched = true; sync(); });
+  // „am 2. Mittwoch“ gewählt: Beginn gleich auf das erste passende Datum legen
+  const align = () => {
+    if (!base) base = startDay();
+    const t = api.alignStart();
+    if (t && onAdjustStart) {
+      onAdjustStart(t);
+      mday.value = String(t.getDate());
+      adjustNote.textContent = `Beginn auf ${t.toLocaleDateString('de-CH', { weekday: 'short', day: 'numeric', month: 'long', year: 'numeric' })} gelegt – den ersten passenden Termin.`;
+      adjustNote.hidden = false;
+    }
+  };
+  for (const x of [freq, interval, endMode, count, modeDay, modeNth, mday, ord, wday, month1, month2]) {
+    x.addEventListener('change', () => { touched = true; sync(); if ([modeNth, ord, wday, month2, freq].includes(x)) align(); });
     x.addEventListener('input', () => { touched = true; sync(); });
   }
-  until.addEventListener('change', () => { touched = true; });
-  days.addEventListener('click', () => { touched = true; });
-  sync();
-  return {
-    el: h('div', { class: 'rr' }, freq, more, complexNote),
-    get changed() { return touched; },
-    value() {
-      if (!freq.value) return null;
-      const out = { freq: freq.value, interval: Math.max(1, parseInt(interval.value, 10) || 1) };
-      if (freq.value === 'WEEKLY') out.byday = dayBtns.filter((b) => b.classList.contains('on')).map((b) => b.dataset.day);
-      if (endMode.value === 'count') out.count = Math.max(1, parseInt(count.value, 10) || 1);
-      if (endMode.value === 'until' && until.value) out.until = until.value;
-      return out;
-    },
-    validate() {
-      if (freq.value && endMode.value === 'until' && (!until.value || !until.isValid())) return 'Bitte ein gültiges Enddatum für die Wiederholung angeben';
-      return null;
-    },
+  until.addEventListener('change', () => { touched = true; sync(); });
+  days.addEventListener('click', () => { touched = true; sync(); });
+  api.refresh = () => {
+    base = null; // vom Benutzer geändert
+    adjustNote.hidden = true;
+    // Beginn geändert: Vorgaben für noch nicht berührte Auswahl nachführen
+    if (!touched) {
+      const d = startDay();
+      const o = ordinalOf(d);
+      mday.value = String(d.getDate()); ord.value = String(o.ordinal); wday.value = o.weekday;
+      month1.value = month2.value = String(d.getMonth() + 1);
+    }
+    sync();
   };
+  sync();
+  return api;
 }
 
 function eventDialog(ev, day) {
@@ -404,13 +552,21 @@ function eventDialog(ev, day) {
     reminders.REMINDER_OPTIONS.map(([m, l]) => h('option', { value: String(m), selected: curAlarm === String(m) }, l)),
     curAlarm !== 'default' && curAlarm !== 'none' && !knownMinutes.includes(curAlarm)
       ? h('option', { value: curAlarm, selected: true }, reminders.reminderLabel(Number(curAlarm))) : null);
-  const rr = recurrenceEditor(ev && ev.rrule, () => (sDate.value ? parseDateOnly(sDate.value) : s));
+  const rr = recurrenceEditor(ev && ev.rrule, () => (sDate.value ? parseDateOnly(sDate.value) : s), {
+    onAdjustStart: (t) => {
+      // Beginn verschieben, Dauer beibehalten
+      const old = sDate.value ? parseDateOnly(sDate.value) : s;
+      const diff = Math.round((t - new Date(old.getFullYear(), old.getMonth(), old.getDate())) / 86400000);
+      sDate.value = ymd(t);
+      if (eDate.value) eDate.value = ymd(addDays(parseDateOnly(eDate.value), diff));
+    },
+  });
   const loc = h('input', { type: 'text', value: ev ? ev.location : '' });
   const desc = h('textarea', { rows: 4 }, ev ? ev.description : '');
   const syncTime = () => { sTime.hidden = allDay.checked; eTime.hidden = allDay.checked; };
   allDay.addEventListener('change', syncTime);
   syncTime();
-  sDate.addEventListener('change', () => { if (sDate.value && eDate.value < sDate.value) eDate.value = sDate.value; });
+  sDate.addEventListener('change', () => { if (sDate.value && eDate.value < sDate.value) eDate.value = sDate.value; rr.refresh(); });
 
   const recurring = !!(ev && ev.recurring);
 
@@ -441,7 +597,45 @@ function eventDialog(ev, day) {
       h('p', { class: 'small' }, 'Organisiert von ', h('strong', {}, org.name || org.email), org.name ? ` <${org.email}>` : ''),
       h('div', { class: 'ans-row' }, h('span', { class: 'small muted' }, 'Deine Antwort:'), answerBtns),
       attList());
-  } else if (ev && ev.attendees && ev.attendees.length) {
+  }
+  // Eigener Termin (oder neu): Teilnehmer einladen und bearbeiten
+  const own = !invited && (!ev || !(ev.attendees && ev.attendees.length) || role === 'organizer');
+  let people = null;
+  if (own) {
+    const orgMail = ev && ev.organizer ? ev.organizer.email : null;
+    const initial = ev && ev.attendees ? ev.attendees.filter((a) => a.email !== orgMail) : [];
+    const quote = (n) => (/[",;<>@]/.test(n) ? `"${n.replace(/"/g, '')}"` : n);
+    const rcpt = recipientInput('attendees', initial.map((a) => (a.name ? `${quote(a.name)} <${a.email}>` : a.email)).join(', '), 'Teilnehmer einladen (Name oder Adresse) …');
+    const identSel = h('select', { class: 'ev-ident', 'aria-label': 'Einladen als' });
+    const identRow = field('Einladen als', identSel);
+    identRow.hidden = true;
+    if (!orgMail) {
+      get('/events/identities').then((r) => {
+        const ids = r.identities || [];
+        clear(identSel, ids.map((i) => h('option', { value: String(i.id), selected: i.isDefault }, i.name ? `${i.name} <${i.email}>` : i.email)));
+        identRow.hidden = ids.length < 2;
+      }).catch(() => {});
+    }
+    const notifyCb = h('input', { type: 'checkbox', class: 'ev-notify', checked: true });
+    const notifyRow = h('label', { class: 'check' }, notifyCb, ' Teilnehmer per Mail benachrichtigen');
+    const syncPeople = () => { notifyRow.hidden = rcpt.rcptEmpty() && !initial.length; };
+    rcpt.addEventListener('rcpt-change', syncPeople);
+    rcpt.addEventListener('input', syncPeople);
+    syncPeople();
+    attSection = h('fieldset', { class: 'ev-people' },
+      h('legend', {}, 'Teilnehmer'),
+      rcpt,
+      initial.length ? attList() : null,
+      identRow,
+      notifyRow,
+      orgMail ? h('p', { class: 'hint' }, `Organisiert von dir (${orgMail}). Bei geänderter Zeit, Ort oder Wiederholung werden alle erneut um Antwort gebeten.`) : null);
+    people = {
+      values: () => parseAddresses(rcpt.rcptValue()).map((a) => ({ email: a.address.trim(), name: a.name })),
+      identityId: () => (identSel.value ? Number(identSel.value) : undefined),
+      notify: () => notifyCb.checked,
+      had: initial.length > 0,
+    };
+  } else if (ev && ev.attendees && ev.attendees.length && !invited) {
     attSection = h('fieldset', { class: 'ev-people' }, h('legend', {}, 'Teilnehmer'), attList());
   }
 
@@ -471,6 +665,16 @@ function eventDialog(ev, day) {
     if (!title.value.trim()) { toast('Bitte einen Titel angeben', 'error'); return true; }
     const rrErr = rr.validate();
     if (rrErr) { toast(rrErr, 'error'); return true; }
+    if (isNew || rr.changed) {
+      const t = rr.alignStart();
+      if (t) {
+        const old = parseDateOnly(sDate.value);
+        const diff = Math.round((t - old) / 86400000);
+        sDate.value = ymd(t);
+        if (eDate.value) eDate.value = ymd(addDays(parseDateOnly(eDate.value), diff));
+        toast(`Beginn auf den ersten passenden Termin gelegt: ${t.toLocaleDateString('de-CH')}`);
+      }
+    }
     let times;
     try { times = formTimes(); } catch (err) { toast(err.message, 'error'); return true; }
     const cal = collections.find((c) => c.url === calSel.value);
@@ -489,6 +693,16 @@ function eventDialog(ev, day) {
     // Wiederholung nur senden, wenn neu oder geändert (erweiterte Regeln anderer Programme bleiben erhalten)
     if (isNew || rr.changed) payload.rrule = rr.value();
     if (!isNew && ev.sourceId !== cal.sourceId) { toast('Verschieben zwischen verschiedenen Servern ist nicht möglich', 'error'); return true; }
+    if (people) {
+      const list = people.values();
+      const bad = list.filter((a) => !/^[^\s@<>]+@[^\s@<>]+\.[^\s@<>]+$/.test(a.email));
+      if (bad.length) { toast(`Ungültige Adresse: ${bad.map((a) => a.email).join(', ')}`, 'error'); return true; }
+      if (list.length || people.had) {
+        payload.attendees = list;
+        payload.identityId = people.identityId();
+        payload.notify = people.notify();
+      }
+    }
 
     if (!isNew && recurring) {
       payload.recurrenceId = ev.recurrenceId;
@@ -503,9 +717,16 @@ function eventDialog(ev, day) {
       }
     }
 
-    if (isNew) await post('/events', payload);
-    else await put('/events', { ...payload, url: ev.url, etag: ev.etag });
-    toast('Termin gespeichert', 'success');
+    const res = isNew ? await post('/events', payload) : await put('/events', { ...payload, url: ev.url, etag: ev.etag });
+    const n = res && res.notified;
+    if (n && n.error) toast(`Termin gespeichert, aber Einladungen nicht verschickt: ${n.error}`, 'error', 8000);
+    else if (n && (n.invited || n.updated || n.cancelled)) {
+      const parts = [];
+      if (n.invited) parts.push(`${n.invited} eingeladen`);
+      if (n.updated) parts.push(`${n.updated} über die Änderung informiert`);
+      if (n.cancelled) parts.push(`${n.cancelled} abgesagt`);
+      toast(`Termin gespeichert – ${parts.join(', ')}`, 'success', 6000);
+    } else toast('Termin gespeichert', 'success');
     reminders.reschedule();
     notify('events');
     loadEvents();
@@ -513,10 +734,11 @@ function eventDialog(ev, day) {
   };
 
   const remove = async () => {
+    const organized = role === 'organizer' && ev.attendees && ev.attendees.length > 1;
     const checkbox = invited ? {
       label: `Absage an ${(ev.organizer && (ev.organizer.name || ev.organizer.email)) || 'den Organisator'} senden`,
       checked: true,
-    } : null;
+    } : organized ? { label: 'Absage an alle Teilnehmer senden', checked: true } : null;
     let pick;
     if (recurring) {
       pick = await choiceDialog('Serientermin löschen', `„${ev.title}“ ist ein wiederkehrender Termin.`, [
@@ -534,6 +756,7 @@ function eventDialog(ev, day) {
     const n = r && r.notified;
     if (n && n.error) toast(`Gelöscht, aber Absage nicht verschickt: ${n.error}`, 'error');
     else if (n && n.replied) toast('Termin gelöscht – Absage an den Organisator gesendet');
+    else if (n && n.cancelled) toast(`Termin gelöscht – Absage an ${n.cancelled} Teilnehmer gesendet`);
     else toast(pick.value === 'this' ? 'Termin aus der Serie gelöscht' : 'Termin gelöscht');
     reminders.reschedule();
     notify('events');

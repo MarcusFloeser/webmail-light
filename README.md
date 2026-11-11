@@ -8,7 +8,7 @@ Browser-Mailclient für mehrere Benutzer, komplett als Docker-Compose-Stack.
 | Push | Dauerhafte IMAP-**IDLE**-Verbindung auf den Posteingang jedes Kontos → WebSocket an alle offenen Browser-Tabs, optional Desktop-Benachrichtigung. Übrige Ordner per STATUS-Polling (Standard 120 s) |
 | Ordnerliste | Hierarchisch, Systemordner (SPECIAL-USE bzw. Namenserkennung DE/EN) zuerst, Ungelesen-Zähler, anlegen/umbenennen/löschen, Drag & Drop |
 | Threads | Konversationen über References/In-Reply-To, **kontoweit über alle Ordner** (eigene Antworten aus „Gesendet“ erscheinen im Verlauf), Duplikate werden zusammengefasst, nachträgliches Zusammenführen wenn ein Bindeglied später eintrifft |
-| CalDAV | Beliebig viele vorhandene CalDAV-Server pro Benutzer (Nextcloud, mailcow/SOGo, Radicale …); Monats-/Wochen-/Listenansicht mit Kalenderwochen (ISO 8601, Klick auf die KW öffnet die Woche), Serientermine (Intervall, Wochentage, Ende nach Datum/Anzahl; einzelne Termine einer Serie ändern oder löschen), empfangene Einladungen zusagen/ablehnen (iMIP, auch mit SOGo), Erinnerungen als Browser-Benachrichtigung |
+| CalDAV | Beliebig viele vorhandene CalDAV-Server pro Benutzer (Nextcloud, mailcow/SOGo, Radicale …); Monats-/Wochen-/Listenansicht mit Kalenderwochen (ISO 8601, Klick auf die KW öffnet die Woche), Serientermine (Intervall, Wochentage, monatlich/jährlich am n-ten Wochentag wie „jeden 2. Mittwoch“ oder am letzten Tag, Ende nach Datum/Anzahl; einzelne Termine einer Serie ändern oder löschen), eigene Einladungen verschicken und bearbeiten, empfangene zusagen/ablehnen (iMIP, auch mit SOGo), Erinnerungen als Browser-Benachrichtigung |
 | CardDAV | Adressbücher der eingebundenen Server, Kontakte inkl. Adressen bearbeiten (unbekannte vCard-Felder bleiben erhalten), Adress-Autovervollständigung beim Schreiben |
 | Benutzerverwaltung | Übersicht für Admins mit letzter Anmeldung (Tooltip: zuletzt aktiv) und Mailbox-Belegung je Benutzer – per IMAP QUOTA vom Mailserver (z. B. Dovecot mit Quota-Plugin), sonst als „ca.“ aus den synchronisierten Nachrichten geschätzt; Aktualisierung alle 30 Min. |
 | Mehrbenutzer | Anmeldung direkt mit den IMAP-Zugangsdaten (`AUTH_MODE=imap`, Benutzer + Postfach werden beim ersten Login angelegt) oder eigene Benutzerverwaltung; jeder Benutzer sieht nur seine Daten |
@@ -196,18 +196,33 @@ Die Daten bleiben auf dem Server und sind weiterhin mit Handy, Thunderbird usw. 
 
 ### Serientermine
 
-Im Termin-Dialog unter **Wiederholung**: täglich, wöchentlich (mit Wochentagen), monatlich oder jährlich, jeweils „alle n Tage/Wochen/…“, endet nie, an einem Datum oder nach einer Anzahl Terminen. Beim Ändern oder Löschen eines Termins aus einer Serie fragt die Webmail: **Nur diesen Termin** (Ausnahme bzw. Löschung nur dieses Datums) oder **Alle Termine der Serie** (eine geänderte Uhrzeit verschiebt die ganze Serie). Erweiterte Regeln aus anderen Programmen (z. B. „jeden 2. Dienstag im Monat“) werden angezeigt und bleiben erhalten, solange die Wiederholung nicht geändert wird.
+Im Termin-Dialog unter **Wiederholung**: täglich, wöchentlich (mit Wochentagen), monatlich oder jährlich, jeweils „alle n Tage/Wochen/…“, endet nie, an einem Datum oder nach einer Anzahl Terminen.
+
+Monatlich und jährlich gibt es zwei Arten:
+- **am Tag**: „am 15.“ oder „am letzten Tag“ (jährlich mit Monat, z. B. „am 15. März“)
+- **am Wochentag**: „am 2. Mittwoch“, „am letzten Freitag“, „am 5. Montag“ (nur in Monaten, die einen haben); jährlich z. B. „am 1. Freitag im März“
+
+Die Vorgaben kommen vom Beginn des Termins (11.11.2026 → „am 11.“ bzw. „am 2. Mittwoch“). Passt der Beginn nicht zur gewählten Regel, legt die Webmail ihn auf den ersten passenden Termin und sagt das. Unter der Auswahl steht die Regel als Satz („Alle 2 Monate am 3. Donnerstag“). Solche Regeln aus Outlook (`BYSETPOS`) oder Google werden erkannt und sind bearbeitbar. Beim Ändern oder Löschen eines Termins aus einer Serie fragt die Webmail: **Nur diesen Termin** (Ausnahme bzw. Löschung nur dieses Datums) oder **Alle Termine der Serie** (eine geänderte Uhrzeit verschiebt die ganze Serie). Erweiterte Regeln aus anderen Programmen (z. B. „jeden 2. Dienstag im Monat“) werden angezeigt und bleiben erhalten, solange die Wiederholung nicht geändert wird.
+
+### Einladungen verschicken und bearbeiten
+
+Im Termin-Dialog unter **Teilnehmer** Namen oder Adressen eingeben (Vorschläge aus Kontakten und bisherigen Empfängern). Beim Speichern gehen Einladungen als Standard-Kalendermail (iMIP) an die Teilnehmer – sie können in Outlook, Apple Kalender, Thunderbird, Gmail, SOGo usw. direkt zusagen oder absagen.
+
+- **Einladen als**: bei mehreren Absender-Identitäten wählbar; diese Adresse ist Organisator und Absender.
+- **Bearbeiten**: Neue Teilnehmer erhalten eine Einladung, bisherige eine Aktualisierung, entfernte eine Absage. Bei geänderter Zeit, Ort oder Wiederholung werden alle erneut um Antwort gebeten; sonst bleiben ihre Antworten erhalten. Bei Serien lässt sich auch nur ein Termin ändern – dann geht nur dieser Termin an die Teilnehmer.
+- **Antworten** der Teilnehmer erscheinen als Mail mit Karte; „Übernehmen“ trägt den Status (✓ / ? / ✕) im Termin ein. Im Termin-Dialog steht der Status jedes Teilnehmers.
+- **Löschen**: Mit „Absage an alle Teilnehmer senden“ (Standard) erhalten alle eine Absage – auch für einzelne Termine einer Serie.
+- „Teilnehmer per Mail benachrichtigen“ abwählen, um nur den Kalender zu ändern, ohne Mails zu verschicken.
+- Einladungen anderer kann nur deren Organisator ändern – dort bleibt es bei Zusagen/Vielleicht/Absagen.
 
 ### Einladungen beantworten
-
-Die Webmail erstellt selbst keine Einladungen, beantwortet aber empfangene:
 
 - Eine Einladungsmail zeigt eine Karte mit Zeit, Ort, Organisator und Teilnehmern sowie den Knöpfen **Zusagen / Vielleicht / Absagen**. Die Antwort geht als Standard-Kalendermail (iMIP) an den Organisator; der Termin wird im gewählten Kalender eingetragen (bei Absage entfernt). Das Senden der Antwort lässt sich abwählen.
 - Im Kalender sind unbeantwortete Einladungen gestrichelt, vorläufig zugesagte schraffiert. Im Termin-Dialog lässt sich die Antwort nachträglich ändern; beim Löschen einer Einladung kann eine Absage an den Organisator gehen.
 - **Absagen des Organisators** lassen sich mit einem Klick aus dem Kalender entfernen. Antworten auf Einladungen, die du z. B. in SOGo oder auf dem Handy verschickt haben, werden beim Öffnen der Antwortmail in den Termin übernommen.
-- Teilnehmer von Terminen aus anderen Programmen werden im Dialog mit ihrem Status angezeigt und beim Bearbeiten nicht verändert.
+- Teilnehmer von Terminen, die jemand anderes organisiert, werden im Dialog mit ihrem Status angezeigt und beim Bearbeiten nicht verändert.
 
-**SOGo/mailcow**: Eingetragene Einladungen erhalten `SCHEDULE-AGENT=CLIENT` (RFC 6638), damit SOGo nicht zusätzlich eine eigene Antwort verschickt (ab SOGo 3.2.5).
+**SOGo/mailcow, Nextcloud**: Organisator und Teilnehmer erhalten `SCHEDULE-AGENT=CLIENT` (RFC 6638) – die Webmail verschickt Einladungen, Absagen und Antworten selbst, der CalDAV-Server nicht zusätzlich (keine doppelten Mails; SOGo ab 3.2.5).
 
 ### Lokale Adressbücher, Import/Export, Adressen aus Mails
 

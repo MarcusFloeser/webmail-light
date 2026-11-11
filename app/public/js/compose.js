@@ -185,7 +185,7 @@ const addrToString = (a) => (a.name ? `${quoteName(a.name)} <${a.address}>` : a.
 // Laufender Drag-Vorgang einer Adresse zwischen den Feldern
 let rcptDrag = null;
 
-function recipientInput(name, value, placeholder) {
+export function recipientInput(name, value, placeholder) {
   const chips = [];
   const chipBox = h('span', { class: 'rcpt-chips' });
   const input = h('input', { type: 'text', name: `${name}-typing`, placeholder, autocomplete: 'off', spellcheck: 'false', class: 'rcpt-input', 'aria-label': placeholder });
@@ -196,7 +196,7 @@ function recipientInput(name, value, placeholder) {
   let initializing = true;
 
   const changed = () => {
-    if (cur && !initializing) cur.dirty = true;
+    if (cur && !initializing && wrap.closest('.compose')) cur.dirty = true;
     input.placeholder = chips.length ? '' : placeholder;
     wrap.dispatchEvent(new Event('rcpt-change', { bubbles: true }));
   };
@@ -304,7 +304,7 @@ function recipientInput(name, value, placeholder) {
       addAddresses(parts);
       input.value = rest ? addrToString(rest) : '';
     }
-    if (cur) cur.dirty = true;
+    if (cur && wrap.closest('.compose')) cur.dirty = true;
     search();
   });
   input.addEventListener('keydown', (e) => {

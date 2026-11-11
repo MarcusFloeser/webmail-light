@@ -1077,7 +1077,13 @@ body.c-resizing iframe { pointer-events: none; }
 /* ===================================================================== Serientermine & Einladungen */
 .rr { display: grid; gap: 8px; }
 .rr-more { display: grid; gap: 8px; padding: 8px 10px; border: 1px solid var(--border); border-radius: var(--radius-sm); background: var(--panel-2); }
-.rr-more[hidden], .rr-days[hidden] { display: none; }
+.rr-more[hidden], .rr-days[hidden], .rr-monthly[hidden] { display: none; }
+.rr-monthly { display: grid; gap: 6px; }
+.rr-monthly .rr-line { cursor: pointer; }
+.rr-monthly select:disabled { opacity: .55; }
+.rr-summary { margin: 0; color: var(--text-2); }
+.rr-adjust { margin: 0; }
+.row2:has(.rr-more:not([hidden])) { grid-template-columns: 1fr; }
 .rr-line { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; font-size: 13px; }
 .rr-line select { width: auto; }
 .rr-int { width: 5.5em !important; }

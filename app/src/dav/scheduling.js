@@ -1,12 +1,13 @@
 'use strict';
 
 /**
- * Antworten auf empfangene Einladungen (iMIP, RFC 6047): Zusagen/Vielleicht/Absagen.
+ * Einladungen per Mail (iMIP, RFC 6047 / iTIP, RFC 5546).
  *
- * Die Webmail erstellt selbst keine Einladungen. Die Antwort geht über das SMTP-Konto der
- * eingeladenen Identität an den Organisator. Im eigenen Kalender gespeicherte Einladungen
- * tragen SCHEDULE-AGENT=CLIENT (RFC 6638) – so verschickt der CalDAV-Server (z. B. SOGo)
- * keine zusätzliche Antwort.
+ * - Eigene Einladungen: REQUEST an neue bzw. bestehende Teilnehmer, CANCEL an entfernte Teilnehmer
+ *   oder an alle beim Löschen. Absender ist die Identität des Organisators.
+ * - Empfangene Einladungen: Zusagen/Vielleicht/Absagen (REPLY) an den Organisator.
+ * Gespeicherte Termine tragen SCHEDULE-AGENT=CLIENT (RFC 6638) – so verschickt der CalDAV-Server
+ * (z. B. SOGo, Nextcloud) keine zusätzlichen Mails.
  */
 const db = require('../db');
 const ics = require('./ics');
@@ -67,10 +68,18 @@ const FREQ = { DAILY: 'täglich', WEEKLY: 'wöchentlich', MONTHLY: 'monatlich', 
 const FREQN = { DAILY: 'Tage', WEEKLY: 'Wochen', MONTHLY: 'Monate', YEARLY: 'Jahre' };
 const DAYS = { MO: 'Mo', TU: 'Di', WE: 'Mi', TH: 'Do', FR: 'Fr', SA: 'Sa', SU: 'So' };
 
+const WDL = { MO: 'Montag', TU: 'Dienstag', WE: 'Mittwoch', TH: 'Donnerstag', FR: 'Freitag', SA: 'Samstag', SU: 'Sonntag' };
+const MONTHS = ['Januar', 'Februar', 'März', 'April', 'Mai', 'Juni', 'Juli', 'August', 'September', 'Oktober', 'November', 'Dezember'];
+
 function describeRule(r) {
   if (!r) return '';
   let t = r.interval > 1 ? `alle ${r.interval} ${FREQN[r.freq] || ''}` : (FREQ[r.freq] || r.freq);
-  if (r.byday && r.byday.length) t += ` (${r.byday.map((d) => DAYS[d] || d).join(', ')})`;
+  if (r.freq === 'WEEKLY' && r.byday && r.byday.length) t += ` (${r.byday.map((d) => DAYS[d] || d).join(', ')})`;
+  const ord = r.ordinal ? `${r.ordinal === -1 ? 'letzten' : `${r.ordinal}.`} ${WDL[r.weekday] || r.weekday}` : null;
+  const day = r.monthday ? (r.monthday === -1 ? 'letzten Tag' : `${r.monthday}.`) : null;
+  const mon = r.month ? MONTHS[r.month - 1] : null;
+  if (ord) t += ` am ${ord}${mon ? ` im ${mon}` : ''}`;
+  else if (day) t += mon ? (r.monthday === -1 ? ` am letzten Tag im ${mon}` : ` am ${day} ${mon}`) : ` am ${day}`;
   if (r.count) t += `, ${r.count} Mal`;
   else if (r.until) t += `, bis ${r.until.split('-').reverse().join('.')}`;
   return t;
@@ -122,6 +131,98 @@ async function sendReply(user, data, partstat, { recurrenceId, tz, comment } = {
   return { sent: true, me: me.email };
 }
 
+// ------------------------------------------------------------------ eigene Einladungen (Organisator)
+
+function inviteText(ev, { tz, who, kind } = {}) {
+  const lines = [];
+  if (kind === 'cancel') lines.push(`${who} hat diesen Termin abgesagt:`, '');
+  else if (kind === 'update') lines.push(`${who} hat den Termin geändert:`, '');
+  else lines.push(`${who} lädt dich zu diesem Termin ein:`, '');
+  lines.push(`Termin: ${ev.title}`);
+  const when = fmtRange(ev, tz);
+  if (when) lines.push(`Wann:   ${when}`);
+  const rule = describeRule(ev.rrule);
+  if (rule) lines.push(`Wiederholung: ${rule}`);
+  if (ev.location) lines.push(`Ort:    ${ev.location}`);
+  const people = (ev.attendees || []).filter((a) => !ev.organizer || a.email !== ev.organizer.email);
+  if (people.length && kind !== 'cancel') lines.push(`Teilnehmer: ${people.map((a) => a.name || a.email).join(', ')}`);
+  if (ev.description && kind !== 'cancel') lines.push('', ev.description);
+  if (kind !== 'cancel') lines.push('', 'Bitte antworte über die Schaltflächen deines Mailprogramms (Zusagen / Vielleicht / Absagen).');
+  return lines.join('\n');
+}
+
+/** Bin ich der Organisator dieses Termins? → { inv, organizer } oder null */
+async function asOrganizer(user, data) {
+  if (!data) return null;
+  let inv;
+  try { inv = ics.parseInvitation(data, []); } catch (_) { return null; }
+  if (!inv.organizer || !inv.organizer.email) return null;
+  const mine = await myEmails(user);
+  if (!mine.includes(lc(inv.organizer.email))) return null;
+  return inv;
+}
+
+const others = (inv) => (inv ? inv.attendees.filter((a) => a.email !== lc(inv.organizer && inv.organizer.email)) : []);
+
+/**
+ * Nach dem Speichern eines eigenen Termins Einladungen verschicken.
+ * before: bisherige Daten (null bei neuem Termin), after: gespeicherte Daten.
+ * recurrenceId: nur dieses Vorkommen wurde geändert.
+ * → { invited, updated, cancelled }
+ */
+async function sendInvitations(user, { before, after, recurrenceId, tz }) {
+  const out = { invited: 0, updated: 0, cancelled: 0 };
+  const now = await asOrganizer(user, after);
+  const prev = await asOrganizer(user, before);
+  const org = (now || prev || {}).organizer;
+  if (!org) return out;
+  const ident = await pickIdentity(user, { email: org.email });
+  const who = ident.identity_name || ident.identity_email;
+  const nowList = others(now);
+  const prevList = others(prev);
+  const prevSet = new Set(prevList.map((a) => a.email));
+  const nowSet = new Set(nowList.map((a) => a.email));
+  const added = nowList.filter((a) => !prevSet.has(a.email));
+  const kept = nowList.filter((a) => prevSet.has(a.email));
+  const removed = prevList.filter((a) => !nowSet.has(a.email));
+  const evInfo = (data) => { const x = ics.parseInvitation(data, []); return x; };
+
+  if (now && (added.length || kept.length)) {
+    const req = ics.itipMessage(after, 'REQUEST', { recurrenceId });
+    const info = evInfo(req.data);
+    if (added.length) {
+      await compose.sendItip(ident, { to: added, method: 'REQUEST', ics: req.data, subject: `Einladung: ${info.title}`, text: inviteText(info, { tz, who, kind: 'new' }) });
+      out.invited = added.length;
+    }
+    if (kept.length) {
+      await compose.sendItip(ident, { to: kept, method: 'REQUEST', ics: req.data, subject: `Aktualisiert: ${info.title}`, text: inviteText(info, { tz, who, kind: 'update' }) });
+      out.updated = kept.length;
+    }
+  }
+  if (removed.length && before) {
+    const can = ics.itipMessage(before, 'CANCEL', { recurrenceId, only: removed.map((a) => a.email), bump: true });
+    const info = evInfo(can.data);
+    await compose.sendItip(ident, { to: removed, method: 'CANCEL', ics: can.data, subject: `Abgesagt: ${info.title}`, text: inviteText(info, { tz, who, kind: 'cancel' }) });
+    out.cancelled = removed.length;
+  }
+  return out;
+}
+
+/** Eigenen Termin (oder ein Vorkommen) absagen: CANCEL an alle Teilnehmer. data = Stand vor dem Löschen bzw. nach dem EXDATE. */
+async function sendCancel(user, data, { recurrenceId, tz } = {}) {
+  const inv = await asOrganizer(user, data);
+  const list = others(inv);
+  if (!inv || !list.length) return { cancelled: 0 };
+  const ident = await pickIdentity(user, { email: inv.organizer.email });
+  const can = ics.itipMessage(data, 'CANCEL', { recurrenceId, bump: !recurrenceId });
+  const info = ics.parseInvitation(can.data, []);
+  await compose.sendItip(ident, {
+    to: list, method: 'CANCEL', ics: can.data, subject: `Abgesagt: ${info.title}`,
+    text: inviteText(info, { tz, who: ident.identity_name || ident.identity_email, kind: 'cancel' }),
+  });
+  return { cancelled: list.length };
+}
+
 /** Termin mit dieser UID in allen Kalendern des Benutzers suchen. */
 async function findEvent(user, uid) {
   if (!uid) return null;
@@ -141,4 +242,5 @@ async function findEvent(user, uid) {
 
 module.exports = {
   myIdentities, myEmails, pickIdentity, sendReply, findEvent, mailText, describeRule, PARTSTAT_TEXT,
+  sendInvitations, sendCancel, asOrganizer,
 };

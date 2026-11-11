@@ -120,6 +120,12 @@ function router() {
   }));
 
   // ------------------------------------------------------------ Termine
+  /** Absender-Identitäten für Einladungen */
+  r.get('/events/identities', wrap(async (req, res) => {
+    const ids = await scheduling.myIdentities(req.user);
+    res.json({ identities: ids.map((i) => ({ id: i.id, name: i.name, email: i.email, isDefault: i.is_default })) });
+  }));
+
   r.get('/events', wrap(async (req, res) => {
     const start = new Date(req.query.start);
     const end = new Date(req.query.end);
@@ -174,20 +180,58 @@ function router() {
     res.json({ events, errors });
   }));
 
-  /** Teilnehmer/Organisator werden in der Webmail nicht bearbeitet (keine eigenen Einladungen) – unverändert lassen. */
-  const stripScheduling = (fields) => {
+  /**
+   * Teilnehmer vorbereiten. Eigene Termine (bzw. neue): attendees [{ email, name }] setzen, Organisator ist
+   * die gewählte Identität (identityId) bzw. der bisherige Organisator. Fremde Einladungen: Teilnehmer
+   * bleiben unverändert (nur der Organisator darf sie ändern).
+   */
+  async function schedulingFields(req, fields, currentData) {
+    const opts = { notify: fields.notify !== false, tz: fields.tz };
+    const wanted = fields.attendees;
+    const identityId = fields.identityId;
     for (const k of ['attendees', 'organizer', 'notify', 'identityId', 'tz']) delete fields[k];
-    return fields;
-  };
+    if (wanted === undefined) return opts;
+    let current = null;
+    if (currentData) {
+      try { current = ics.parseInvitation(currentData, []); } catch (_) { current = null; }
+    }
+    const hasOrganizer = current && current.organizer && current.organizer.email && current.attendees.length;
+    const mine = await scheduling.asOrganizer(req.user, currentData);
+    if (hasOrganizer && !mine) return opts; // Einladung eines anderen: nicht verändern
+    const list = Array.isArray(wanted) ? wanted.filter((a) => a && a.email).slice(0, 200) : [];
+    if (!list.length) {
+      if (hasOrganizer) { fields.attendees = []; fields.organizer = null; }
+      return opts;
+    }
+    let organizer = mine ? mine.organizer : null;
+    if (!organizer) {
+      const ident = await scheduling.pickIdentity(req.user, { identityId });
+      organizer = { email: ident.identity_email, name: ident.identity_name || '' };
+    }
+    fields.organizer = organizer;
+    fields.attendees = list.map((a) => ({ email: String(a.email).trim(), name: String(a.name || '').trim() }));
+    return opts;
+  }
+
+  async function notifyAttendees(req, opts, before, after, recurrenceId) {
+    if (!opts.notify) return null;
+    try {
+      return await scheduling.sendInvitations(req.user, { before, after, recurrenceId, tz: opts.tz });
+    } catch (err) {
+      return { error: err.message };
+    }
+  }
 
   r.post('/events', wrap(async (req, res) => {
     const { sourceId, calendar, ...fields } = req.body;
     const source = await svc.getSource(req.user, sourceId);
     const cal = collUrl(source, calendar);
-    const { uid, data } = ics.buildEvent(stripScheduling(fields));
+    const opts = await schedulingFields(req, fields, null);
+    const { uid, data } = ics.buildEvent(fields);
     const url = `${cal}${encodeURIComponent(uid)}.ics`;
     const etag = await source.client.putObject(url, data, 'text/calendar');
-    res.json({ url, etag });
+    const notified = await notifyAttendees(req, opts, null, data, null);
+    res.json({ url, etag, notified });
   }));
 
   r.put('/events', wrap(async (req, res) => {
@@ -195,17 +239,21 @@ function router() {
     const source = await svc.getSource(req.user, sourceId);
     const target = source.client.assertOwnUrl(url);
     const current = await source.client.getObject(target);
-    const { data } = ics.buildEvent(stripScheduling(fields), current.data);
+    const opts = await schedulingFields(req, fields, current.data);
+    const built = ics.buildEvent(fields, current.data);
+    const data = built.data;
     const useEtag = etag || current.etag;
     // In anderen Kalender verschieben?
     if (calendar && !target.startsWith(collUrl(source, calendar))) {
       const newUrl = `${collUrl(source, calendar)}${target.split('/').pop()}`;
       await source.client.putObject(newUrl, data, 'text/calendar');
       await source.client.deleteObject(target, useEtag);
-      return res.json({ url: newUrl });
+      const notified = await notifyAttendees(req, opts, current.data, data, built.recurrenceId || null);
+      return res.json({ url: newUrl, notified });
     }
     const newEtag = await source.client.putObject(target, data, 'text/calendar', useEtag);
-    res.json({ url: target, etag: newEtag });
+    const notified = await notifyAttendees(req, opts, current.data, data, built.recurrenceId || null);
+    res.json({ url: target, etag: newEtag, notified });
   }));
 
   /**
@@ -220,16 +268,27 @@ function router() {
     let current = null;
     if (notify || req.query.scope === 'this') current = await source.client.getObject(target);
     let notified = null;
+    const organizer = notify && current ? await scheduling.asOrganizer(req.user, current.data) : null;
     if (req.query.scope === 'this' && req.query.recurrenceId) {
       const upd = ics.deleteOccurrence(current.data, req.query.recurrenceId);
-      if (notify) notified = await notifyDelete(req, current.data, upd.recurrenceId, tz);
+      if (notify && organizer) notified = await cancelSafe(req, upd.data, upd.recurrenceId, tz);
+      else if (notify) notified = await notifyDelete(req, current.data, upd.recurrenceId, tz);
       await source.client.putObject(target, upd.data, 'text/calendar', current.etag || undefined);
       return res.json({ ok: true, notified });
     }
-    if (notify) notified = await notifyDelete(req, current.data, null, tz);
+    if (notify && organizer) notified = await cancelSafe(req, current.data, null, tz);
+    else if (notify) notified = await notifyDelete(req, current.data, null, tz);
     await source.client.deleteObject(target, req.query.etag || undefined);
     res.json({ ok: true, notified });
   }));
+
+  async function cancelSafe(req, data, recurrenceId, tz) {
+    try {
+      return await scheduling.sendCancel(req.user, data, { recurrenceId, tz });
+    } catch (err) {
+      return { error: err.message };
+    }
+  }
 
   async function notifyDelete(req, data, recurrenceId, tz) {
     try {
