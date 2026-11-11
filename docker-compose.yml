@@ -23,7 +23,7 @@ services:
 
   app:
     build: ./app
-    image: ghcr.io/marcusfloeser/webmail-light:1.4.6
+    image: ghcr.io/marcusfloeser/webmail-light:1.4.7
     restart: unless-stopped
     depends_on:
       db:

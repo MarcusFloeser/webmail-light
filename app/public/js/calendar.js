@@ -23,6 +23,22 @@ function setHidden(set) { localStorage.setItem('wm.hiddenCals', JSON.stringify([
 const pad = (n) => String(n).padStart(2, '0');
 const ymd = (d) => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 const hm = (d) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+/** Kalenderwoche nach ISO 8601 (Woche mit dem ersten Donnerstag des Jahres = KW 1) */
+export function isoWeek(d) {
+  const x = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = x.getUTCDay() || 7;
+  x.setUTCDate(x.getUTCDate() + 4 - day); // Donnerstag derselben Woche
+  const y0 = new Date(Date.UTC(x.getUTCFullYear(), 0, 1));
+  return Math.ceil(((x - y0) / 86400000 + 1) / 7);
+}
+
+function setView(key) {
+  view = key;
+  try { localStorage.setItem('wm.calView', key); } catch { /* egal */ }
+  renderViewSel();
+  loadEvents();
+}
+
 function startOfWeek(d) {
   const x = new Date(d.getFullYear(), d.getMonth(), d.getDate());
   const wd = (x.getDay() + 6) % 7;
@@ -88,7 +104,7 @@ function mount(main) {
 function renderViewSel() {
   const mk = (key, label) => h('button', {
     type: 'button', class: view === key ? 'on' : '',
-    onClick: () => { view = key; localStorage.setItem('wm.calView', key); renderViewSel(); loadEvents(); },
+    onClick: () => setView(key),
   }, label);
   clear(els.viewSel, mk('month', 'Monat'), mk('week', 'Woche'), mk('list', 'Liste'));
 }
@@ -149,7 +165,7 @@ async function loadEvents() {
   const seq = ++loadSeq;
   const { start, end } = range();
   els.title.textContent = view === 'week'
-    ? `${start.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })} – ${addDays(end, -1).toLocaleDateString('de-CH', { day: 'numeric', month: 'short', year: 'numeric' })}`
+    ? `KW ${isoWeek(start)} · ${start.toLocaleDateString('de-CH', { day: 'numeric', month: 'short' })} – ${addDays(end, -1).toLocaleDateString('de-CH', { day: 'numeric', month: 'short', year: 'numeric' })}`
     : monthFmt.format(cursor);
   try {
     const r = await get('/events', { start: start.toISOString(), end: end.toISOString(), hidden: [...hidden()].join(',') });
@@ -194,6 +210,13 @@ function draw() {
   const cells = [];
   for (let i = 0; i < 42; i++) {
     const day = addDays(start, i);
+    if (i % 7 === 0) {
+      const kw = isoWeek(day);
+      cells.push(h('button', {
+        type: 'button', class: 'cal-kw', title: `Kalenderwoche ${kw} – Wochenansicht öffnen`,
+        onClick: () => { cursor = day; setView('week'); },
+      }, kw));
+    }
     const list = eventsOn(day);
     const inMonth = day.getMonth() === cursor.getMonth();
     cells.push(h('div', {
@@ -207,6 +230,7 @@ function draw() {
       }, `+${list.length - 4} weitere`) : null)));
   }
   clear(els.grid, h('div', { class: 'cal-month' },
+    h('div', { class: 'cal-wd cal-kw-head', title: 'Kalenderwoche' }, 'KW'),
     WEEKDAYS.map((w) => h('div', { class: 'cal-wd' }, w)),
     cells));
 }
@@ -241,7 +265,8 @@ function drawList() {
     if (list.length) groups.push([d, list]);
   }
   clear(els.grid, h('div', { class: 'cal-agenda' },
-    groups.length ? groups.map(([d, list]) => h('section', { class: `ag-day ${ymd(d) === ymd(new Date()) ? 'today' : ''}` },
+    groups.length ? groups.map(([d, list], i) => h('section', { class: `ag-day ${ymd(d) === ymd(new Date()) ? 'today' : ''}` },
+      i === 0 || isoWeek(groups[i - 1][0]) !== isoWeek(d) ? h('div', { class: 'ag-kw' }, `KW ${isoWeek(d)}`) : null,
       h('h3', {}, dayFmt.format(d)),
       list.map((ev) => {
         const { s, e } = span(ev);
