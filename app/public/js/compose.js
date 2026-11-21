@@ -72,7 +72,7 @@ export async function openCompose(opts = {}) {
   }
 
   const draft = {
-    identityId: null, to: opts.to || '', cc: '', bcc: '', subject: opts.subject || '', html: '',
+    identityId: null, to: opts.to || '', cc: opts.cc || '', bcc: opts.bcc || '', subject: opts.subject || '', html: '',
     attachments: [], forwardAtts: [], forwardFrom: null, forwardAsAttachment: null,
     inReplyTo: null, mode: mode || 'new', draftMessageId: null, dirty: false,
   };
@@ -134,8 +134,10 @@ export async function openCompose(opts = {}) {
   draft.identityId = identity.id;
   if (mode !== 'draft') {
     const sig = signatureHtml(identity);
+    // Text aus einem mailto:-Link (body=…) vor die Signatur
+    const pre = opts.body ? `${textToHtml(opts.body)}<div><br></div>` : '<div><br></div>';
     draft.html = (mode === 'reply' || mode === 'replyAll' || mode === 'forward')
-      ? `<div><br></div>${sig}${quote}` : `<div><br></div>${sig}`;
+      ? `<div><br></div>${sig}${quote}` : `${pre}${sig}`;
   }
   // „dirty“ merkt sich, seit wann ungespeicherte Änderungen bestehen (für das automatische Speichern)
   let dirty = false;

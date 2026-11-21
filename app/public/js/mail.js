@@ -8,6 +8,7 @@ import * as compose from './compose.js';
 import * as contactsView from './contacts.js';
 import { printMessages, printOptionsDialog } from './print.js';
 import { mailBackground } from './appearance.js';
+import { parseMailto } from './mailto.js';
 import { translateInfo, translateContent, defaultTarget, rememberTarget, languageName } from './translate.js';
 
 const PAGE = 50;
@@ -568,13 +569,24 @@ export function folderMenu(folder, account, e, { inFavorites = false } = {}) {
   ]);
 }
 
+function expandFolder(key) {
+  try {
+    const set = new Set(JSON.parse(localStorage.getItem('wm.expandedFolders') || '[]'));
+    set.add(key);
+    localStorage.setItem('wm.expandedFolders', JSON.stringify([...set]));
+  } catch { /* egal */ }
+}
+
 export async function createFolderDialog(account, parent) {
   const name = await promptDialog(parent ? `Unterordner in „${folderLabel(parent)}“` : `Neuer Ordner in ${account.name}`, 'Ordnername');
   if (!name) return;
   try {
-    await post(`/accounts/${account.id}/folders`, { name, parentId: parent ? parent.id : undefined });
-    toast('Ordner angelegt');
-    setTimeout(() => loadAccounts(), 1500);
+    const r = await post(`/accounts/${account.id}/folders`, { name, parentId: parent ? parent.id : undefined });
+    // Übergeordneten Ordner aufklappen, damit der neue Unterordner sichtbar ist
+    if (parent) expandFolder(`${account.id}:${parent.path}`);
+    await loadAccounts();
+    toast(parent ? `Unterordner „${name}“ in „${folderLabel(parent)}“ angelegt` : `Ordner „${name}“ angelegt`, 'success');
+    if (r && r.id) location.hash = `#/mail/${r.id}`;
   } catch (err) { toast(err.message, 'error'); }
 }
 
@@ -1036,7 +1048,7 @@ a{color:#2557c7}
       // mailto:-Links im eigenen Editor öffnen
       d.addEventListener('click', (e) => {
         const a = e.target.closest && e.target.closest('a[href^="mailto:"]');
-        if (a) { e.preventDefault(); compose.openCompose({ to: decodeURIComponent(a.getAttribute('href').slice(7).split('?')[0]) }); }
+        if (a) { e.preventDefault(); compose.openCompose(parseMailto(a.getAttribute('href'))); }
       });
     } catch { /* ignore */ }
   });

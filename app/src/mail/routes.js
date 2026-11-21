@@ -361,13 +361,26 @@ function router() {
     const name = String(req.body.name || '').trim();
     if (!name) throw httpError(400, 'Name fehlt');
     let path = name;
+    let parent = null;
     if (req.body.parentId) {
-      const parent = await ownFolder(req.body.parentId, req.user.id);
+      parent = await ownFolder(req.body.parentId, req.user.id);
       if (parent.account_id !== a.id) throw httpError(400, 'Übergeordneter Ordner gehört zu anderem Konto');
-      path = `${parent.path}${parent.delimiter || '/'}${name}`;
+      const delim = parent.delimiter || (await db.one(
+        'SELECT delimiter FROM folders WHERE account_id = $1 AND delimiter IS NOT NULL LIMIT 1', [a.id]) || {}).delimiter || '/';
+      if (name.includes(delim)) throw httpError(400, `Der Name darf kein „${delim}“ enthalten`);
+      path = `${parent.path}${delim}${name}`;
     }
-    await manager.get(a.id).createFolder(path);
-    res.json({ ok: true, path });
+    let row;
+    try {
+      row = await manager.get(a.id).createFolder(path);
+    } catch (err) {
+      const msg = String((err && (err.responseText || err.message)) || err);
+      if (/ALREADYEXISTS|already exists/i.test(msg)) throw httpError(409, 'Ein Ordner mit diesem Namen existiert bereits');
+      if (/NOPERM|permission|not allowed/i.test(msg)) throw httpError(403, 'Der Mailserver erlaubt hier keinen Unterordner');
+      throw httpError(502, `Ordner konnte nicht angelegt werden: ${msg}`);
+    }
+    if (!row) throw httpError(502, 'Der Mailserver hat den Ordner nicht angelegt (er erscheint nicht in der Ordnerliste)');
+    res.json({ ok: true, path: row.path, id: row.id, parentPath: row.parent_path });
   }));
 
   r.patch('/folders/:id', wrap(async (req, res) => {

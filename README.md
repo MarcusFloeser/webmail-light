@@ -119,6 +119,15 @@ Unter jedem Konto in der Ordnerleiste und in den Kontoeinstellungen sieht der Be
 
 
 
+
+## E-Mail-Links (mailto:)
+
+Die Webmail kann `mailto:`-Links öffnen – Empfänger, Cc/Bcc, Betreff und Text aus dem Link werden in eine neue Nachricht übernommen (RFC 6068). Ist man nicht angemeldet, öffnet sich die Nachricht direkt nach der Anmeldung.
+
+- **Im Browser** (Chrome, Edge, Brave, Firefox): *Einstellungen → E-Mail-Konten → „Webmail für E-Mail-Links verwenden“* und die Rückfrage des Browsers bestätigen. Danach öffnen E-Mail-Adressen auf Webseiten die Webmail. Safari unterstützt das nicht. Voraussetzung: Aufruf über HTTPS.
+- **Für Links aus anderen Programmen** (Word, PDF, Explorer/Finder): Webmail als App installieren (Chrome/Edge/Brave: Symbol „Installieren“ in der Adressleiste) – das Manifest meldet sie als Handler für `mailto:` an. Anschliessend im Betriebssystem als Standard-App für E-Mail wählen (Windows: *Einstellungen → Apps → Standard-Apps → MAILTO*).
+- Der Handler ruft `https://<webmail>/?mailto=<Link>` auf; `mailto:`-Links in empfangenen Mails öffnen ebenfalls den eigenen Editor (inkl. Betreff und Text).
+
 ## Übersetzen
 
 In jeder geöffneten Mail gibt es den Knopf **Übersetzen** (Symbol „文A“). Die Mail wird an Ort und Stelle übersetzt – Formatierung, Links und Bilder bleiben erhalten, der Betreff wird mit übersetzt. Ein Hinweis oberhalb zeigt die erkannte Ausgangssprache, die Zielsprache (umschaltbar, wird gemerkt) und „Original anzeigen“; ein zweiter Klick auf den Knopf zeigt ebenfalls wieder das Original.
@@ -287,7 +296,6 @@ Im Termin-Dialog unter **Teilnehmer** Namen oder Adressen eingeben (Vorschläge 
 - **Keine OAuth2-Anmeldung.** Gmail, iCloud, Yahoo, Fastmail brauchen ein App-Passwort; Microsoft-Konten (Outlook.com/Microsoft 365) erlauben Passwort-Login teils gar nicht mehr.
 - Push per IDLE nur für den Posteingang jedes Kontos (IMAP erlaubt pro Verbindung nur einen Ordner); andere Ordner werden im Intervall abgefragt und sofort beim Öffnen synchronisiert.
 - Suche durchsucht den lokalen Index (Betreff, Absender, Empfänger, Vorschau), keine Volltextsuche im Mailtext.
-- Einladungen werden nur beantwortet, nicht erstellt (Teilnehmer einladen bitte in SOGo oder einem anderen Kalenderprogramm).
 
 ## Projektstruktur
 
@@ -301,7 +309,7 @@ app/src/ldap.js         Passwort ändern/zurücksetzen im LDAP
 app/src/password.js     „Passwort vergessen“-Ablauf
 app/src/imap/           Sync-Worker (IDLE, CONDSTORE), Threading, Manager
 app/src/mail/           API für Konten, Identitäten, Ordner, Threads, Aktionen, Versand
-app/src/dav/            CalDAV/CardDAV-Client, Kalender-/Kontakt-API, vCard/iCal, Einladungen beantworten
+app/src/dav/            CalDAV/CardDAV-Client, Kalender-/Kontakt-API, vCard/iCal, Einladungen (iMIP)
 app/src/sieve/          ManageSieve-Client, Sieve-Script für Filter & Abwesenheit
 app/src/loginguard.js   Schutz vor Passwort-Raten
 app/public/             Frontend (Vanilla-JS-Module, kein Build-Schritt)

@@ -1,3 +1,4 @@
+import * as mailtoLinks from './mailto.js';
 import { h, clear, icon, iconButton, toast, modal, confirmDialog, field, formValues, fullDate } from './ui.js';
 import { get, post, put, patch, del } from './api.js';
 import * as appearance from './appearance.js';
@@ -71,7 +72,35 @@ function accountList(c) {
           a.status === 'error' && a.lastError ? h('div', { class: 'error-text small' }, a.lastError) : null),
         a.enabled ? statusBadge(a) : h('span', { class: 'status-pill' }, 'deaktiviert'))))
       : h('p', { class: 'muted' }, 'Noch keine Konten. Du kannst beliebig viele IMAP-Konten hinzufügen.'),
-    sentSetting());
+    sentSetting(),
+    mailtoSetting());
+}
+
+/** Webmail für mailto:-Links (E-Mail-Adressen auf Webseiten, in anderen Programmen) */
+function mailtoSetting() {
+  const ok = mailtoLinks.canRegister();
+  const installed = mailtoLinks.isInstalledApp();
+  return h('section', { class: 'mailto-setting' },
+    h('h3', {}, 'E-Mail-Links (mailto:)'),
+    h('p', { class: 'muted small' }, 'Ein Klick auf eine E-Mail-Adresse auf einer Webseite öffnet direkt die Webmail mit einer neuen Nachricht – Empfänger, Betreff und Text aus dem Link sind schon eingetragen.'),
+    ok ? h('div', { class: 'row-btns' },
+      h('button', {
+        type: 'button', class: 'btn', onClick: () => {
+          try {
+            mailtoLinks.register();
+            toast('Bitte im Browser bestätigen – die Rückfrage erscheint oben bzw. als Symbol in der Adressleiste.', 'info', 8000);
+          } catch (err) { toast(`Nicht möglich: ${err.message}`, 'error'); }
+        },
+      }, 'Webmail für E-Mail-Links verwenden'),
+      h('a', { class: 'btn btn-ghost', href: 'mailto:test@example.ch?subject=Test%20mailto-Link&body=Hallo%2C%0Adies%20ist%20ein%20Test.' }, 'Testlink'))
+      : h('p', { class: 'hint' }, window.isSecureContext
+        ? 'Dieser Browser kann keine Webseite für E-Mail-Links eintragen (z. B. Safari). In Chrome, Edge, Brave und Firefox geht es.'
+        : 'Nur möglich, wenn die Webmail über HTTPS aufgerufen wird.'),
+    ok ? h('p', { class: 'hint' },
+      'Kommt keine Rückfrage, wurde sie früher abgelehnt: Chrome/Brave/Edge → Einstellungen → Datenschutz und Sicherheit → Website-Einstellungen → Weitere Berechtigungen → Protokoll-Handler; Firefox → Einstellungen → Allgemein → Anwendungen → mailto.') : null,
+    h('p', { class: 'hint' }, installed
+      ? 'Die Webmail läuft als installierte App. Damit auch Links aus anderen Programmen (Word, PDF, Explorer) hier landen, die App im Betriebssystem als Standard für E-Mail wählen – Windows: Einstellungen → Apps → Standard-Apps → „MAILTO“; macOS: Mail → Einstellungen → Allgemein → Standard-E-Mail-App.'
+      : 'Für Links aus anderen Programmen (Word, PDF, Explorer): Webmail als App installieren (Chrome/Edge/Brave: Symbol „Installieren“ in der Adressleiste) und sie danach im Betriebssystem als Standard-App für E-Mail wählen.'));
 }
 
 /** Ablage gesendeter Mails: immer gespeichert – Antworten wahlweise im gleichen Ordner */

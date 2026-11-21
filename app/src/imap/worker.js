@@ -585,16 +585,24 @@ class AccountWorker {
     return res || {};
   }
 
+  /** Ordner anlegen und gleich in die Ordnerliste übernehmen → Datenbank-Zeile des neuen Ordners */
   async createFolder(path) {
     const c = await this.client();
-    await c.mailboxCreate(path);
-    await c.mailboxSubscribe(path).catch(() => {});
+    const r = await c.mailboxCreate(path);
+    const real = (r && r.path) || path;
+    await c.mailboxSubscribe(real).catch(() => {});
+    // Ordnerliste sofort abgleichen (nicht erst beim nächsten Sync), damit der Ordner gleich erscheint
+    await this.syncFolderList(c);
+    const row = await db.one('SELECT * FROM folders WHERE account_id = $1 AND path = $2', [this.id, real]);
     this.scheduleFullSync();
+    return row;
   }
 
   async renameFolder(path, newPath) {
     const c = await this.client();
     await c.mailboxRename(path, newPath);
+    await c.mailboxSubscribe(newPath).catch(() => {});
+    await this.syncFolderList(c);
     this.scheduleFullSync();
   }
 

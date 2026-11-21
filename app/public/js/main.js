@@ -12,6 +12,7 @@ import * as reminders from './reminders.js';
 import * as agenda from './agenda.js';
 import * as appearance from './appearance.js';
 import * as splitters from './splitters.js';
+import * as mailtoLinks from './mailto.js';
 
 const $ = (sel) => document.querySelector(sel);
 let currentView = null;
@@ -552,6 +553,8 @@ async function startApp() {
   splitters.init();
   loadContactPhotos();
   route();
+  // per mailto:-Link geöffnet? → Nachricht vorbereiten
+  mailtoLinks.openPending((o) => compose.openCompose(o)).catch(() => {});
 }
 
 async function logout() {
@@ -625,4 +628,5 @@ function showBootRetry(message) {
   setTimeout(() => location.reload(), 5000);
 }
 
+mailtoLinks.captureFromUrl();
 boot();
