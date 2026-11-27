@@ -167,6 +167,7 @@ Nach dem Update: `docker compose pull pdf && docker compose up -d` (nicht nur `r
 Unter **Einstellungen → Filter & Abwesenheit** richtet jeder Benutzer pro Konto ein:
 
 - **Abwesenheitsnotiz** mit Betreff, Text, optionalem Zeitraum (von/bis – schaltet sich selbst ein und aus) und „höchstens alle n Tage pro Absender“. Sie antwortet auf alle Adressen des Kontos (inkl. Identitäten), nicht auf Spam, Newsletter und automatische Mails.
+- **Weiterleitung** aller eingehenden Mails an bis zu 4 Adressen – wahlweise mit Kopie im eigenen Postfach (Filterregeln gelten dann weiter) oder ohne (es wird nichts mehr abgelegt). Spam wird standardmässig nicht weitergeleitet; die eigene Adresse ist als Ziel gesperrt (Schleife).
 - **Filterregeln**: Wenn Absender / Empfänger / Cc / Betreff / beliebige Kopfzeile *enthält / enthält nicht / ist genau / ist nicht* … dann *in Ordner verschieben, als gelesen markieren, markieren, weiterleiten (auch mit Kopie), löschen*. Regeln lassen sich einzeln ein-/ausschalten und sortieren.
 
 Die Regeln liegen als Sieve-Script „webmail“ direkt auf dem Mailserver (ManageSieve, RFC 5804) und wirken auch, wenn niemand eingeloggt ist – auch für Mails, die aufs Handy kommen. Der Mailserver prüft das Script beim Speichern.

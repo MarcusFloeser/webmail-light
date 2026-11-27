@@ -98,6 +98,13 @@ function router() {
     if (input.vacation && (!Array.isArray(input.vacation.addresses) || !input.vacation.addresses.length)) {
       input.vacation = { ...input.vacation, addresses: await accountAddresses(a) };
     }
+    if (input.forward && input.forward.enabled) {
+      // Weiterleitung an die eigene Adresse → Schleife
+      const own = new Set(await accountAddresses(a));
+      const list = Array.isArray(input.forward.addresses) ? input.forward.addresses : [];
+      const loop = list.find((x) => own.has(String(x).trim().toLowerCase()));
+      if (loop) throw httpError(400, `Weiterleitung an die eigene Adresse ${loop} ist nicht möglich (Schleife)`);
+    }
     const gen = script.generate(input);
     try {
       const state = await withSieve(opts, async (c) => {
@@ -107,6 +114,7 @@ function router() {
         if (gen.data.vacation.enabled) needs.push('vacation');
         if (gen.script.includes('"date"')) needs.push('date');
         if (gen.script.includes('"include"')) needs.push('include');
+        if (gen.script.includes('"copy"')) needs.push('copy');
         const missing = needs.filter((x) => !c.extensions.includes(x));
         if (missing.length) throw httpError(400, `Der Mailserver unterstützt ${missing.join(', ')} nicht`);
         try {

@@ -8,6 +8,8 @@ const FIELD_LABEL = { from: 'Absender', to: 'Empfänger (An)', cc: 'Kopie (Cc)',
 const OP_LABEL = { contains: 'enthält', not_contains: 'enthält nicht', is: 'ist genau', not_is: 'ist nicht' };
 const ACTION_LABEL = { fileinto: 'In Ordner verschieben', seen: 'Als gelesen markieren', flag: 'Markieren (Stern)', redirect: 'Weiterleiten an', discard: 'Löschen (endgültig)' };
 
+const MAX_FORWARD = 4;
+
 let current = null; // { account, data, server }
 
 export async function filterSection(c, accountId) {
@@ -58,6 +60,29 @@ function draw(c, accSel) {
     ? h('div', { class: 'banner' }, icon('alert', 16), h('span', {}, `Das Script „${server.other.name}“ (z. B. SOGo) enthält ebenfalls eine Abwesenheitsnotiz. Bitte nur eine davon verwenden – sonst kann der Mailserver die Antwort verweigern.`))
     : null;
 
+  // ---- Weiterleitung
+  const f = data.forward || { enabled: false, addresses: [], keep: true, skipSpam: true };
+  const own = (server.addresses || []).map((x) => x.toLowerCase());
+  const fOn = h('input', { type: 'checkbox', checked: !!f.enabled, class: 'switch' });
+  const fAddrs = h('textarea', { rows: 2, class: 'fwd-addrs', placeholder: 'name@beispiel.ch', 'aria-label': 'Weiterleiten an' }, (f.addresses || []).join('\n'));
+  const fKeep = h('input', { type: 'checkbox', checked: f.keep !== false });
+  const fSpam = h('input', { type: 'checkbox', checked: f.skipSpam !== false });
+  const fHint = h('p', { class: 'hint fwd-hint' });
+  const fBody = h('div', { class: 'vac-body fwd-body' },
+    field('Weiterleiten an', fAddrs, `Eine Adresse pro Zeile, höchstens ${MAX_FORWARD}.`),
+    h('label', { class: 'check' }, fKeep, ' Kopie in diesem Postfach behalten'),
+    h('label', { class: 'check' }, fSpam, ' Spam nicht weiterleiten (empfohlen)'),
+    fHint);
+  const parseAddrs = () => [...new Set(fAddrs.value.split(/[\s,;]+/).map((x) => x.trim().toLowerCase()).filter(Boolean))];
+  const syncF = () => {
+    fBody.classList.toggle('off', !fOn.checked);
+    fHint.textContent = fKeep.checked
+      ? 'Alle eingehenden Mails gehen zusätzlich an die angegebenen Adressen; hier bleiben sie erhalten und die Filterregeln gelten weiter.'
+      : 'Alle eingehenden Mails gehen nur noch an die angegebenen Adressen – in diesem Postfach wird nichts mehr abgelegt, Filterregeln werden nicht mehr angewendet.';
+  };
+  for (const x of [fOn, fKeep]) x.addEventListener('change', syncF);
+  syncF();
+
   // ---- Regeln
   const ruleList = h('ul', { class: 'rule-list' });
   const drawRules = () => {
@@ -85,6 +110,16 @@ function draw(c, accSel) {
   const save = async (btn) => {
     if (vOn.checked && !vText.value.trim()) { toast('Bitte einen Text für die Abwesenheitsnotiz eingeben', 'error'); vText.focus(); return; }
     if (!vStart.isValid() || !vEnd.isValid()) { toast('Bitte ein gültiges Datum angeben (TT.MM.JJJJ)', 'error'); return; }
+    const fwList = parseAddrs();
+    if (fOn.checked) {
+      if (!fwList.length) { toast('Bitte eine Adresse für die Weiterleitung angeben', 'error'); fAddrs.focus(); return; }
+      const bad = fwList.find((x) => !/^[^\s@<>"]+@[^\s@<>"]+\.[^\s@<>"]+$/.test(x));
+      if (bad) { toast(`Weiterleitung: ungültige Adresse „${bad}“`, 'error'); fAddrs.focus(); return; }
+      const loop = fwList.find((x) => own.includes(x));
+      if (loop) { toast(`Weiterleitung an die eigene Adresse ${loop} ist nicht möglich`, 'error'); fAddrs.focus(); return; }
+      if (fwList.length > MAX_FORWARD) { toast(`Höchstens ${MAX_FORWARD} Weiterleitungsadressen`, 'error'); fAddrs.focus(); return; }
+    }
+    data.forward = { enabled: fOn.checked && fwList.length > 0, addresses: fwList, keep: fKeep.checked, skipSpam: fSpam.checked };
     data.vacation = {
       enabled: vOn.checked, start: vStart.value, end: vEnd.value, subject: vSubject.value.trim(),
       text: vText.value, days: Number(vDays.value) || 1, addresses: [],
@@ -96,6 +131,7 @@ function draw(c, accSel) {
       current.data = JSON.parse(JSON.stringify(r.data));
       const parts = [];
       if (r.data.vacation.enabled) parts.push('Abwesenheitsnotiz aktiv');
+      if (r.data.forward && r.data.forward.enabled) parts.push(`Weiterleitung an ${r.data.forward.addresses.join(', ')} aktiv`);
       const n = r.data.rules.filter((x) => x.enabled).length;
       if (n) parts.push(`${n} Regel${n === 1 ? '' : 'n'} aktiv`);
       toast(parts.length ? `Gespeichert – ${parts.join(', ')}` : 'Gespeichert – keine Filter aktiv', 'success');
@@ -118,6 +154,9 @@ function draw(c, accSel) {
     h('section', { class: 'card-sec' },
       h('label', { class: 'sec-toggle' }, vOn, h('span', {}, h('strong', {}, 'Abwesenheitsnotiz'), h('small', { class: 'muted' }, 'Automatische Antwort, z. B. während der Ferien'))),
       otherVacWarn, vBody),
+    h('section', { class: 'card-sec fwd-sec' },
+      h('label', { class: 'sec-toggle' }, fOn, h('span', {}, h('strong', {}, 'Weiterleitung'), h('small', { class: 'muted' }, 'Alle eingehenden Mails an eine andere Adresse weiterleiten'))),
+      fBody),
     h('section', { class: 'card-sec' },
       h('div', { class: 'section-head' }, h('h3', {}, 'Filterregeln'),
         h('button', { class: 'btn', type: 'button', onClick: () => ruleDialog(null, (r) => { data.rules.push(r); drawRules(); }) }, icon('plus', 16), 'Regel hinzufügen')),

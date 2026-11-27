@@ -1267,3 +1267,5 @@ input[type=checkbox].switch:checked::after { transform: translateX(18px); }
 .tr-banner .tr-subject { flex-basis: 100%; margin-top: 2px; overflow-wrap: anywhere; }
 .row-btns { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 6px 0; }
 .mailto-setting { margin-top: 28px; }
+.fwd-addrs { font-family: inherit; resize: vertical; }
+.fwd-hint { margin: 0; }

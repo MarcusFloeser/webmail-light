@@ -11,6 +11,7 @@
  *   rules: [{ id, name, enabled, match: 'all'|'any',
  *             conditions: [{ field: from|to|cc|tocc|subject|header, header, op: contains|not_contains|is|not_is, value }],
  *             actions: [{ type: fileinto|seen|flag|redirect|discard, folder, address, copy }], stop }],
+ *   forward: { enabled, addresses: [], keep: bool, skipSpam: bool }  – alle Mails weiterleiten
  *   includeOther: 'sogo' | null   – bisher aktives Script (z. B. SOGo-Filter) weiter ausführen
  * }
  */
@@ -32,6 +33,8 @@ function httpError(msg) {
 const FIELDS = ['from', 'to', 'cc', 'tocc', 'subject', 'header'];
 const OPS = ['contains', 'not_contains', 'is', 'not_is'];
 const ACTIONS = ['fileinto', 'seen', 'flag', 'redirect', 'discard'];
+// Dovecot/Pigeonhole erlaubt standardmässig höchstens 4 Weiterleitungen pro Mail (sieve_max_redirects)
+const MAX_FORWARD = 4;
 
 /** Eingaben prüfen und vereinheitlichen. */
 function normalize(input) {
@@ -48,6 +51,20 @@ function normalize(input) {
   };
   if (vacation.enabled && !vacation.text.trim()) throw httpError('Bitte einen Text für die Abwesenheitsnotiz eingeben');
   if (vacation.start && vacation.end && vacation.end < vacation.start) throw httpError('Das Ende der Abwesenheit liegt vor dem Beginn');
+
+  const f = d.forward || {};
+  const fAddrs = [...new Set((Array.isArray(f.addresses) ? f.addresses : String(f.addresses || '').split(/[\s,;]+/))
+    .map((a) => String(a).trim().toLowerCase()).filter(Boolean))];
+  const badF = fAddrs.find((a) => !EMAIL_RE.test(a));
+  if (badF) throw httpError(`Weiterleitung: ungültige Adresse „${badF}“`);
+  if (fAddrs.length > MAX_FORWARD) throw httpError(`Weiterleitung: höchstens ${MAX_FORWARD} Adressen`);
+  const forward = {
+    enabled: !!f.enabled && fAddrs.length > 0,
+    addresses: fAddrs,
+    keep: f.keep !== false,
+    skipSpam: f.skipSpam !== false,
+  };
+  if (f.enabled && !fAddrs.length) throw httpError('Weiterleitung: Bitte mindestens eine Adresse angeben');
 
   const rules = (Array.isArray(d.rules) ? d.rules : []).slice(0, 200).map((r, i) => {
     const conditions = (Array.isArray(r.conditions) ? r.conditions : []).map((c) => ({
@@ -83,7 +100,7 @@ function normalize(input) {
   });
   const includeOther = typeof d.includeOther === 'string' && d.includeOther && d.includeOther !== SCRIPT_NAME
     ? d.includeOther.slice(0, 100) : null;
-  return { vacation, rules, includeOther };
+  return { vacation, forward, rules, includeOther };
 }
 
 /**
@@ -137,6 +154,17 @@ function generate(input) {
     body.push('# Abwesenheitsnotiz', `if allof (${conds.join(', ')}) {`, `  vacation ${args.join(' ')} ${q(v.text)};`, '}', '');
   }
 
+  // Weiterleitung aller Mails – vor den Regeln, damit sie unabhängig von Filtern gilt
+  const fw = d.forward;
+  if (fw.enabled) {
+    const acts = fw.addresses.map((a) => (fw.keep ? `redirect :copy ${q(a)};` : `redirect ${q(a)};`));
+    if (fw.keep) req.add('copy');
+    // Ohne Kopie: nichts weiter ablegen, Regeln entfallen
+    else acts.push('stop;');
+    const cond = fw.skipSpam ? 'allof (not header :contains "X-Spam-Flag" "YES", not header :contains "X-Spam" "Yes")' : 'true';
+    body.push(`# Weiterleitung${fw.keep ? ' (Kopie behalten)' : ''}`, `if ${cond} {`, ...acts.map((x) => `  ${x}`), '}', '');
+  }
+
   for (const r of enabledRules) {
     const acts = [];
     // Flags vor dem Ablegen setzen, damit sie mit abgelegt werden
@@ -165,7 +193,7 @@ function generate(input) {
   if (req.size) head.push(`require [${[...req].sort().map(q).join(', ')}];`);
   return {
     script: `${[...head, '', ...body].join('\r\n').replace(/(\r\n)+$/, '')}\r\n`,
-    active: v.enabled || enabledRules.length > 0 || !!d.includeOther,
+    active: v.enabled || fw.enabled || enabledRules.length > 0 || !!d.includeOther,
     data: d,
   };
 }
@@ -183,7 +211,11 @@ function parse(script) {
 const hasVacation = (script) => /(^|[\s;{])vacation\s/m.test(String(script || '').replace(/#.*$/gm, ''));
 
 function empty() {
-  return { vacation: { enabled: false, subject: '', text: '', days: 1, start: '', end: '', addresses: [] }, rules: [], includeOther: null };
+  return {
+    vacation: { enabled: false, subject: '', text: '', days: 1, start: '', end: '', addresses: [] },
+    forward: { enabled: false, addresses: [], keep: true, skipSpam: true },
+    rules: [], includeOther: null,
+  };
 }
 
-module.exports = { SCRIPT_NAME, generate, parse, normalize, hasVacation, empty };
+module.exports = { SCRIPT_NAME, MAX_FORWARD, generate, parse, normalize, hasVacation, empty };
